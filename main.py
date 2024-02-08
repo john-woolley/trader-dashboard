@@ -1,7 +1,7 @@
 from sanic import Sanic
 import reactpy
+import sanic
 from reactpy.backend.sanic import configure
-import subprocess
 from sanic.log import logger
 from sanic import Request
 from sanic import json
@@ -10,25 +10,33 @@ import os
 from src.sanic_vec_env import SanicVecEnv
 from src.trader import Trader
 from src.ingestion import CVIngestionPipeline
-from functools import partial
 from stable_baselines3 import SAC as model
 from stable_baselines3.common.vec_env import VecMonitor
 import os
+from queue import Empty
 
 app = Sanic(__name__)
+logger.debug(f"Created server process running Sanic Version {sanic.__version__}")
 app_path = os.path.dirname(__file__)
 app.static("/static", os.path.join(app_path, "static"))
 log_dir = os.path.join(app_path, "log")
 
-@app.post("/start")
-async def start(request: Request):
-    # args = request.json
-
-    return json({"status": "success"})
+@app.main_process_start
+async def main_process_start(app):
+    logger.info("Main process started")
+    app.shared_ctx.mp_ctx = mp.get_context("spawn")
+    logger.info("Created shared context")
+    app.shared_ctx.hallpass = mp.Semaphore()
+    logger.info("Created hallpass")
+    app.ctx.vec_env_manager = mp.Manager()
+    #TODO: Work with dev team to figure out why this ProxyList ends up closed
+    app.shared_ctx.vec_envs = app.ctx.vec_env_manager.list()
+    logger.info("Created vec_envs ProxyList")
 
 
 @app.get("/start")
 def start_handler(request: Request):
+
     logger.info("Starting training")
     args = {"cv_periods": 5, "train_start_date": "2019-04-03"}
     cv_periods = args.get("cv_periods", 1)
@@ -40,9 +48,25 @@ def start_handler(request: Request):
     for i in range(0, len(data)):
         logger.info(f"Training on fold {i+1} of {len(data)}")
         train, test = tuple(*iter(data))
-        env = SanicVecEnv([partial(Trader, train, test=True)
-                          for _ in range(16)], app)
-        env = VecMonitor(env, log_dir)
+        env_fn = lambda: Trader(train, test=True)
+        app.shared_ctx.hallpass.acquire()
+        logger.info("Acquired hallpass")
+        try:
+            env = SanicVecEnv([env_fn for _ in range(1)], app)
+            env = VecMonitor(env, log_dir)
+        except:
+            logger.info("Error creating environment")
+            return json({"status": "error"})
+        finally:
+            app.shared_ctx.hallpass.release()
+            logger.info("Released hallpass")
+        try:
+            request.app.shared_ctx.vec_envs.append(env)
+            logger.info(f"Added environment {env} to shared context")
+        except Exception as e:
+            logger.info("Error adding environment to shared context")
+            logger.info(e)
+            return json({"status": "error"})
         policy_kwargs = dict(
             net_arch=dict(
                 pi=[4096, 2048, 1024, 1024], 
@@ -60,38 +84,40 @@ def start_handler(request: Request):
         )
         model_train.learn(total_timesteps=int(500), progress_bar=True)
         model_train.save(f"model_{i}")
-        env.close()
+        app.shared_ctx.hallpass.acquire()
+        try:
+            env.close()
+            request.app.shared_ctx.vec_envs.remove(env)
+        except:
+            logger.info("Error closing environment")
+            return json({"status": "error"})
+        finally:
+            app.shared_ctx.hallpass.release()
     return json({"status": "success"})
 
+@app.get("/stop")
+def stop_handler(request: Request):
+    logger.info(f"Closing environments: {request.app.shared_ctx.vec_envs}")
+    app.shared_ctx.hallpass.acquire()
+    while True:
+        try:
+            env = request.app.shared_ctx.vec_envs[0]
+            env.close()
+            logger.info(f"Closed environment {env}")
+        except Empty:
+            break
+        except Exception as e:
+            logger.info("Error closing environments")
+            logger.info(request.app.shared_ctx.vec_envs.get())
+            return json({"status": "error"})
+        finally:
+            app.shared_ctx.hallpass.release()
+    return json({"status": "success"})
 
 @reactpy.component
 def Button():
     logger.info("Rendering button")
     return reactpy.html.button({"on_click": start_handler}, "Click me!")
-
-
-@app.main_process_start
-async def main_process_start(app):
-    app.shared_ctx.mp_ctx = mp.get_context("spawn")
-
-
-@app.route("/stop", methods=["POST"])
-async def stop(request: Request):
-    data = request.json
-    model_file_handle = data.get("model_file_handle")
-    os.system(
-        f"kill -9 $(ps aux | grep {model_file_handle} | awk '{{print $2}}')")
-    return json({"status": "success"})
-
-
-@app.route("/status", methods=["POST"])
-async def status(request: Request):
-    data = request.json
-    model_file_handle = data.get("model_file_handle")
-    output = subprocess.check_output(
-        f"ps aux | grep {model_file_handle}", shell=True)
-    return json({"status": output})
-
 
 @reactpy.component
 def ReactApp():
