@@ -13,25 +13,28 @@ from src.ingestion import CVIngestionPipeline
 from stable_baselines3 import SAC as model
 from stable_baselines3.common.vec_env import VecMonitor
 import os
-from queue import Empty
+import psycopg2
+import sqlalchemy as sa
+import psutil
+
+def getconn():
+    c = psycopg2.connect(user="trader_dashboard", host="0.0.0.0", dbname="trader_dashboard")
+    return c 
 
 app = Sanic(__name__)
-logger.debug(f"Created server process running Sanic Version {sanic.__version__}")
+
 app_path = os.path.dirname(__file__)
 app.static("/static", os.path.join(app_path, "static"))
 log_dir = os.path.join(app_path, "log")
 
 @app.main_process_start
 async def main_process_start(app):
-    logger.info("Main process started")
+    logger.info(f"Created server process running Sanic Version {sanic.__version__}")
+    logger.debug("Main process started")
     app.shared_ctx.mp_ctx = mp.get_context("spawn")
-    logger.info("Created shared context")
+    logger.debug("Created shared context")
     app.shared_ctx.hallpass = mp.Semaphore()
-    logger.info("Created hallpass")
-    app.ctx.vec_env_manager = mp.Manager()
-    #TODO: Work with dev team to figure out why this ProxyList ends up closed
-    app.shared_ctx.vec_envs = app.ctx.vec_env_manager.list()
-    logger.info("Created vec_envs ProxyList")
+    logger.debug("Created hallpass")
 
 
 @app.get("/start")
@@ -52,21 +55,15 @@ def start_handler(request: Request):
         app.shared_ctx.hallpass.acquire()
         logger.info("Acquired hallpass")
         try:
-            env = SanicVecEnv([env_fn for _ in range(1)], app)
+            env = SanicVecEnv([env_fn for _ in range(2)], request.app)
             env = VecMonitor(env, log_dir)
-        except:
+        except Exception as e:
             logger.info("Error creating environment")
+            logger.info(e)
             return json({"status": "error"})
         finally:
             app.shared_ctx.hallpass.release()
             logger.info("Released hallpass")
-        try:
-            request.app.shared_ctx.vec_envs.append(env)
-            logger.info(f"Added environment {env} to shared context")
-        except Exception as e:
-            logger.info("Error adding environment to shared context")
-            logger.info(e)
-            return json({"status": "error"})
         policy_kwargs = dict(
             net_arch=dict(
                 pi=[4096, 2048, 1024, 1024], 
@@ -79,39 +76,33 @@ def start_handler(request: Request):
             env,
             policy_kwargs=policy_kwargs,
             verbose=1,
-            batch_size=128,
+            batch_size=1,
             use_sde=True,
         )
-        model_train.learn(total_timesteps=int(500), progress_bar=True)
+        model_train.learn(total_timesteps=int(1e6), progress_bar=True)
         model_train.save(f"model_{i}")
-        app.shared_ctx.hallpass.acquire()
-        try:
-            env.close()
-            request.app.shared_ctx.vec_envs.remove(env)
-        except:
-            logger.info("Error closing environment")
-            return json({"status": "error"})
-        finally:
-            app.shared_ctx.hallpass.release()
     return json({"status": "success"})
+
 
 @app.get("/stop")
 def stop_handler(request: Request):
-    logger.info(f"Closing environments: {request.app.shared_ctx.vec_envs}")
-    app.shared_ctx.hallpass.acquire()
-    while True:
-        try:
-            env = request.app.shared_ctx.vec_envs[0]
-            env.close()
-            logger.info(f"Closed environment {env}")
-        except Empty:
-            break
-        except Exception as e:
-            logger.info("Error closing environments")
-            logger.info(request.app.shared_ctx.vec_envs.get())
-            return json({"status": "error"})
-        finally:
-            app.shared_ctx.hallpass.release()
+    logger.info("Stopping training")
+    request.app.shared_ctx.hallpass.acquire()
+    logger.info("Acquired hallpass")
+    try:
+        pool = sa.pool.QueuePool(getconn, max_overflow=0, pool_size=24)
+        conn = sa.create_engine('postgresql://trader_dashboard/trader_dashboard', pool=pool).connect()
+        worker_query = sa.select("*").select_from(sa.table("workers"))
+        workers = list(map(lambda x: x[1], conn.execute(worker_query).fetchall()))
+        for worker in workers:
+            request.app.m.restart(worker)
+    except Exception as e:
+        logger.info("Error stopping workers")
+        logger.info(e)
+        return json({"status": "error"})
+    finally:
+        request.app.shared_ctx.hallpass.release()
+        logger.info("Released hallpass")
     return json({"status": "success"})
 
 @reactpy.component
