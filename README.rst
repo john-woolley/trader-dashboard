@@ -9,7 +9,7 @@ trader-dashboard
     :stub-columns: 1
 
     * - Build
-      - | |Pylint|
+      - | |Tests| |Pylint| 
     * - Package
       - | |Code style ruff|
 
@@ -17,7 +17,8 @@ trader-dashboard
    :target: https://github.com/john-woolley/trader-dashboard/actions/workflows/pylint.yml
 .. |Code style ruff| image:: https://img.shields.io/badge/code%20style-ruff-000000.svg
     :target: https://docs.astral.sh/ruff/
-
+.. |Tests| image:: https://github.com/john-woolley/trader-dashboard/actions/workflows/tests.yml/badge.svg?branch=main
+   :target: https://github.com/john-woolley/trader-dashboard/actions/workflows/tests.yml
 .. end-badges
 
 =======================================================
