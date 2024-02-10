@@ -13,6 +13,7 @@ from src.ingestion import CVIngestionPipeline
 from stable_baselines3 import SAC as model
 from stable_baselines3.common.vec_env import VecMonitor
 import src.db as db
+import numpy as np
 
 CONN = "postgresql+psycopg2://trader_dashboard@0.0.0.0:5432/trader_dashboard"
 app = Sanic(__name__)
@@ -30,6 +31,14 @@ async def main_process_start(app):
     logger.debug("Created shared context")
     app.shared_ctx.hallpass = mp.Semaphore()
     logger.debug("Created hallpass")
+    db.drop_workers_table()
+    logger.debug("Dropped old workers table")
+    db.drop_jobs_table()
+    logger.debug("Dropped old jobs table")
+    db.create_jobs_table()
+    logger.debug("Created new jobs table")
+    db.create_workers_table()
+    logger.debug("Created new workers table")
 
 
 @app.get("/start")
@@ -39,6 +48,10 @@ def start_handler(request: Request):
     cv_periods = int(request.args.get("cv_periods", 1))
     train_start_date = request.args.get("train_start_date")
     ncpu = int(request.args.get("ncpu", 1))
+    jobname = request.args.get("jobname", "default")
+    render_mode = request.args.get("render_mode", "none")
+    db.add_job(jobname)
+    timesteps = int(request.args.get("timesteps", 1000))
     logger.info(
         f"Starting training with cv_periods={cv_periods}"
         f"and train_start_date={train_start_date}")
@@ -48,11 +61,12 @@ def start_handler(request: Request):
     for i in range(0, len(data)):
         logger.info(f"Training on fold {i+1} of {len(data)}")
         train, test = tuple(*iter(data))
-        def env_fn(): return Trader(train, test=True)
+        def env_fn(): return Trader(train, test=True, render_mode=render_mode)
         app.shared_ctx.hallpass.acquire()
         logger.info("Acquired hallpass")
         try:
-            env = SanicVecEnv([env_fn for _ in range(ncpu)], request.app)
+            env = SanicVecEnv([env_fn for _ in range(ncpu)],
+                              request.app, jobname)
             env = VecMonitor(env, log_dir)
         except Exception as e:
             logger.error("Error creating environment")
@@ -76,18 +90,36 @@ def start_handler(request: Request):
             batch_size=1,
             use_sde=True,
         )
-        model_train.learn(total_timesteps=int(1e6))
+        model_train.learn(total_timesteps=timesteps)
         model_train.save(f"model_{i}")
-    return json({"status": "success"})
+        env_test = Trader(test, test=True)
+        model_handle = f"model_{i}"
+        model_test = model.load(model_handle, env=env_test)
+        vec_env = model_test.get_env()
+        obs = vec_env.reset()
+        lstm_states = None
+        num_envs = 1
+        episode_starts = np.ones((num_envs,), dtype=bool)
+        for j in range(len(test["close"]) - 1):
+            action, lstm_states = model_test.predict(
+                obs, state=lstm_states, episode_start=episode_starts
+            )
+            obs, reward, done, info = vec_env.step(action)
+            if done:
+                break
+        test_render_handle = f"test_render_{i}.csv"
+        env_test.render_df.to_csv(test_render_handle)
+    return json({"status": "success", "model_name": model_handle, "test_render": test_render_handle})
 
 
 @app.get("/stop")
 def stop_handler(request: Request):
-    logger.info("Stopping training")
+    jobname = request.args.get("jobname", "default")
+    logger.info(f"Stopping training for job: {jobname}")
     request.app.shared_ctx.hallpass.acquire()
     logger.info("Acquired hallpass")
     try:
-        workers = db.get_workers()
+        workers = db.get_workers_by_name(jobname)
         request.app.m.terminate_worker(workers)
     except Exception as e:
         logger.error("Error stopping workers")

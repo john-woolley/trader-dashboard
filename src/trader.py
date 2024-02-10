@@ -12,7 +12,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 import pandas as pd
 from scipy.stats import yeojohnson
 from typing import Union
-
+from sanic.log import logger
 
 def get_percentile(val, M, axis=0):
     return (M > val).argmax(axis) / M.shape[axis]
@@ -404,19 +404,16 @@ class Trader(gym.Env):
         """
 
         if mode == "human":
-            print(
-                (
-                    f"Step:{self.current_step}, \
-                      Date: {self.dates[self.current_index]}, \
-                      Action: {action}, \
-                      Positions: {self.net_leverage}, \
-                      Market Value: {self.current_portfolio_value:.2f}, \
-                      Balance: {self.balance:.2f}, \
-                      Stock Owned: {self.total_net_position_value:.2f}, \
-                        Reward: {self._get_reward():.2f} \
-                      Gross Leverage: {self.total_gross_position_value:.2f} "
-                )
+            output = (
+                f"Step:{self.current_step}, "
+                f"Date: {self.dates[self.current_index]}, "
+                f"Market Value: {self.current_portfolio_value:.2f}, "
+                f"Balance: {self.balance:.2f}, "
+                f"Stock Owned: {self.total_net_position_value:.2f}, "
+                f"Reward: {self._get_reward():.2f}, "
+                f"Gross Leverage: {self.total_gross_position_value:.2f}"
             )
+            logger.info(output)
         else:
             pass
         state_dict = {

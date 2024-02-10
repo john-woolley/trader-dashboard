@@ -9,8 +9,7 @@ import numpy as np
 from gymnasium import spaces
 from hashlib import md5
 from random import uniform
-import sqlalchemy as sa
-import psycopg2
+import src.db as db
 
 from stable_baselines3.common.vec_env.base_vec_env import (
     CloudpickleWrapper,
@@ -20,11 +19,6 @@ from stable_baselines3.common.vec_env.base_vec_env import (
     VecEnvStepReturn,
 )
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
-
-
-def getconn():
-    c = psycopg2.connect(user="trader_dashboard", host="0.0.0.0", dbname="trader_dashboard")
-    return c
 
 
 def _worker(
@@ -106,13 +100,8 @@ class SanicVecEnv(VecEnv):
            Defaults to 'forkserver' on available platforms, and 'spawn' otherwise.
     """
 
-    def __init__(self, env_fns: List[Callable[[], gym.Env]], sanic_app: Sanic, start_method: Optional[str] = None):
+    def __init__(self, env_fns: List[Callable[[], gym.Env]], sanic_app: Sanic, jobname: str, start_method: Optional[str] = None):
         
-        self.db_pool = sa.pool.QueuePool(getconn, pool_size=20, max_overflow=0)
-        self.pool_engine = sa.create_engine('postgresql://trader_dashboard/trader_dashboard', pool=self.db_pool)
-        self.db_conn = self.pool_engine.connect()
-        self.metadata = sa.MetaData()
-        self.metadata.reflect(bind=self.pool_engine)
         self.waiting = False
         self.closed = False
         n_envs = len(env_fns)
@@ -123,38 +112,17 @@ class SanicVecEnv(VecEnv):
         self.remotes, self.work_remotes = zip(
             *[ctx.Pipe() for _ in range(n_envs)])
         self.processes = []
-        self._create_worker_table()
         for work_remote, remote, env_fn in zip(self.work_remotes, self.remotes, env_fns):
             worker_name = f'RLVecEnv{md5(str(uniform(0,1)).encode()).hexdigest()[:10]}'
             kwargs = {'remote': work_remote, 'parent_remote': remote,
                       'env_fn_wrapper': CloudpickleWrapper(env_fn)}
             sanic_app.m.manage(ident=worker_name, func=_worker, kwargs=kwargs, workers=1, restartable=True)
-            insert_stmt = sa.insert(sa.Table('workers', self.metadata))
-            insert_stmt = insert_stmt.values(name=worker_name, status='queued')
-            self.db_conn.execute(insert_stmt)
-            self.db_conn.commit()
-
+            db.add_worker(worker_name, jobname)
         self.remotes[0].send(("get_spaces", None))
         observation_space, action_space = self.remotes[0].recv()
 
         super().__init__(len(env_fns), observation_space, action_space)
 
-    def _create_worker_table(self):
-        if not self.db_conn.dialect.has_table(self.db_conn, 'workers'):
-            tbl = sa.Table(
-                'workers',
-                self.metadata,
-                sa.Column('id', sa.Integer, primary_key=True),
-                sa.Column('name', sa.String(255), nullable=False),
-                sa.Column('status', sa.String(255), nullable=False)
-            )
-
-            try:
-                self.metadata.create_all(self.db_conn)
-                logger.info("Table 'workers' created successfully.")
-            except Exception as e:
-                logger.info(f"Error creating table 'workers': {e} in {__file__}")
-    
     def step_async(self, actions: np.ndarray) -> None:
         for remote, action in zip(self.remotes, actions):
             remote.send(("step", action))
