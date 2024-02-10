@@ -1,4 +1,4 @@
-# trader-dashboard
+trader-dashboard
 =============================
 
 .. start-badges
@@ -8,12 +8,12 @@
     :stub-columns: 1
 
     * - Build
-      - | |Tests|
+      - | |Pylint|
     * - Package
       - | |Code style ruff|
 
-.. |Tests| image:: https://github.com/john-woolley/trader-dashboard/actions/workflows/tests.yml/badge.svg?branch=main
-   :target: https://github.com/john-woolley/trader-dashboard/actions/workflows/tests.yml
+.. |Pylint| image:: https://github.com/john-woolley/trader-dashboard/actions/workflows/pylint.yml/badge.svg?branch=main
+   :target: https://github.com/john-woolley/trader-dashboard/actions/workflows/pylint.yml
 .. |Code style ruff| image:: https://img.shields.io/badge/code%20style-ruff-000000.svg
     :target: https://docs.astral.sh/ruff/
 
@@ -21,7 +21,8 @@
 
 Reinforcement Learning Dashboard with Sanic and ReactPy
 
-## Introduction
+Introduction
+------------
 This project aims to create a dashboard for reinforcement learning in trading using Sanic and ReactPy. It provides a user-friendly interface for training, monitoring and analyzing trading strategies.
 
 ## Features
@@ -30,7 +31,8 @@ This project aims to create a dashboard for reinforcement learning in trading us
 - Performance metrics tracking
 - Strategy comparison
 
-## Installation
+Installation
+------------
 To install and run the dashboard, follow these steps:
 
 1. Clone the repository:
@@ -53,7 +55,8 @@ To install and run the dashboard, follow these steps:
     http://localhost:8000
     ```
 
-## Usage
+Usage
+-----
 Once the dashboard is up and running, you can perform the following actions:
 
 - Define a reinforcement model based on your own provided market data and free data APIs
