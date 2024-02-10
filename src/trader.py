@@ -44,7 +44,7 @@ reward = trader._get_reward()
 """
 
 import random
-from typing import Union
+from typing import Tuple, Any, SupportsFloat, Dict
 from collections import deque
 
 import numpy as np
@@ -100,7 +100,7 @@ class Trader(gym.Env):
     def __init__(
         self,
         data: pd.DataFrame,
-        initial_balance=100000,
+        initial_balance: float = 1e5,
         n_lags=10,
         transaction_cost=0.0025,
         ep_length=252,
@@ -136,7 +136,7 @@ class Trader(gym.Env):
         self.ep_length = ep_length
         if self.test:
             self.ep_length = len(self.dates)
-        self.initial_balance = initial_balance
+        self.initial_balance: float = initial_balance
         low = [-1] * self.no_symbols + [0.05, 1.0]
         high = [1] * self.no_symbols + [0.25, 1.5]
         self.action_space = spaces.Box(
@@ -151,7 +151,7 @@ class Trader(gym.Env):
         self.current_step = 0
         self.buffer_len = n_lags
         self.render_df = pd.DataFrame()
-        self.balance = 0
+        self.balance = self.initial_balance
         self.net_leverage = np.zeros(self.no_symbols)
         self.model_portfolio = np.zeros(self.no_symbols)
         self.spot = np.zeros(self.no_symbols)
@@ -160,13 +160,14 @@ class Trader(gym.Env):
         self.return_series = np.array([])
         self.var = 0
         self.log_ret = 0
-        self.state_buffer = deque([], self.buffer_len)
+        self.state_buffer: deque = deque([], self.buffer_len)
         self.paid_slippage = 0
         self.short_leverage = 0.05
         self.long_leverage = 1.0
         self.rate = 0.01
         self.prev_portfolio_value = 0
         self.period = 0
+        self.action = np.zeros(self.no_symbols)
 
     @property
     def current_portfolio_value(self):
@@ -286,7 +287,7 @@ class Trader(gym.Env):
         if self.test:
             self.period = 0
         else:
-            self.period = random.randint(0, len(self.dates) - self.ep_length)
+            self.period = random.randint(0, len(self.dates) - self.ep_length)  # nosec
         self.spot = self.data.loc[self.dates[self.period + self.current_step], "spot"]
         assert isinstance(self.spot, pd.Series)
         self.spot = self.spot.values
@@ -307,23 +308,22 @@ class Trader(gym.Env):
         Returns:
             int: The predicted state for the current step.
         """
+        p = self.period
+        s = self.current_step
         macro_len = len(macro_cols)
-        curr_date = self.dates[self.period + self.current_step]
+        curr_date = self.dates[p + s]
         if self.current_step < 10:
-            prev_dates = self.dates[self.period : self.period + self.current_step + 1]
+            prev_dates = self.dates[p : p + s + 1]
         else:
-            prev_dates = self.dates[
-                self.period + self.current_step - 10 : self.period
-                + self.current_step
-                + 1
-            ]
+            prev_dates = self.dates[p + s - 10 : p + s + 1]
         spot = self.data.loc[curr_date, "spot"]
         spot_window = self.data.loc[prev_dates, "spot"].to_frame()
         assert isinstance(spot_window, pd.DataFrame)
         log_spot_window = np.log(spot_window)
         assert isinstance(log_spot_window, pd.DataFrame)
         if self.current_step > 0:
-            spot_returns = log_spot_window.unstack().diff().dropna().iloc[-1].values
+            spot_returns = log_spot_window.unstack().diff().dropna().iloc[-1]
+            spot_returns = spot_returns.values
         else:
             spot_returns = np.zeros(self.no_symbols)
         assert isinstance(spot_returns, np.ndarray)
@@ -344,7 +344,8 @@ class Trader(gym.Env):
             slices.append(this_slice)
         stock_state = np.concatenate(slices)
         stock_state = np.concatenate([stock_state, spot_rank, spot_returns])
-        macro_state = np.array([self.data.loc[curr_date, col] for col in macro_cols])
+        macro_state = [self.data.loc[curr_date, col] for col in macro_cols]
+        macro_state = np.array(macro_state)
         macro_state = np.concatenate(macro_state)[slice(None, None, macro_len)]
         state = np.concatenate(
             [stock_state, self.net_position_weights, self.model_portfolio]
@@ -418,7 +419,7 @@ class Trader(gym.Env):
         Returns:
         None
         """
-        self.balance *= 1 + (self.rate / 252)
+        self.balance *= 1.0 + (float(self.rate) / 252.0)
 
     def _get_return(self) -> float:
         """
@@ -445,7 +446,7 @@ class Trader(gym.Env):
         """
         return self.net_position_values[symbol] / self.current_portfolio_value
 
-    def step(self, action) -> tuple:
+    def step(self, action) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
         """
         Executes a single step in the trading environment.
 
@@ -488,7 +489,8 @@ class Trader(gym.Env):
         self.state_buffer.append(self._get_state_frame())
         self._update_return_series()
         reward = self._get_reward()
-        self.render(action, mode=self.render_mode)
+        self.action = action
+        self.render(mode=str(self.render_mode))
         self.current_step += 1
         done = (
             self.current_step == self.ep_length - 1
@@ -496,19 +498,24 @@ class Trader(gym.Env):
         )
         if done:
             self.reset()
-        info = {}
+        info: Dict[str, Any] = {}
         obs = self._get_observation()
         return obs, reward, done, False, info
 
-    def _get_observation(self):
-        return self.state_buffer
+    def _get_observation(self) -> np.ndarray:
+        """
+        Get the observation for the current step.
 
-    def render(self, action, mode: Union[str, None] = "human"):
+        Returns:
+            np.ndarray: The observation for the current step.
+        """
+        return np.array(self.state_buffer)
+
+    def render(self, mode: str = "human") -> None:
         """
         Renders the current state of the trader.
 
         Parameters:
-        - action (str): The action taken at the current step.
         - mode (str): The rendering mode. Default is "human".
 
         Returns:
@@ -539,8 +546,9 @@ class Trader(gym.Env):
             for i in range(self.no_symbols)
         }
         action_dict = {
-            f"action_{self.symbols[i]}": action[i] for i in range(self.no_symbols)
+            f"action_{self.symbols[i]}": self.action[i] for i in range(self.no_symbols)
         }
         state_dict = {**state_dict, **net_lev_dict, **action_dict}
         step_df = pd.DataFrame.from_dict(state_dict)
-        self.render_df = pd.concat([self.render_df, step_df], ignore_index=True)
+        dfs = [self.render_df, step_df]
+        self.render_df = pd.concat(dfs, ignore_index=True)

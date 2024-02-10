@@ -244,4 +244,4 @@ def react_app():
 configure(main_app, react_app)
 
 if __name__ == "__main__":
-    main_app.run(host="0.0.0.0", port=8000, debug=True, workers=16)
+    main_app.run(host="192.168.0.110", port=8000, debug=True, workers=16)

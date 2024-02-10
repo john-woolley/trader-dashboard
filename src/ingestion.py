@@ -197,10 +197,10 @@ class CVIngestionPipeline:
         start_date: Union[str, None] = None,
     ):
         if start_date:
-            self.df = process_data(file_path).loc[start_date:]
+            self.df = process_data(file_path)
         if cv_period_length:
             self.cv_periods = int(
-                len(self.df.index.get_level_values("date").unique()) / cv_period_length
+                len(self.df.index.get_level_values("date").unique()) // cv_period_length
             )
         else:
             self.cv_periods = cv_periods

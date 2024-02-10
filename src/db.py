@@ -1,5 +1,5 @@
 """
-This module contains functions for interacting with a PostgreSQL database in 
+This module contains functions for interacting with a PostgreSQL database in
 the context of a trader dashboard application.
 It provides functions for creating tables, inserting data,
 retrieving data, and managing jobs and workers.
@@ -18,7 +18,7 @@ def getconn():
     Returns a connection to the trader_dashboard database.
     """
     c = psycopg2.connect(
-        user="trader_dashboard", host="0.0.0.0", dbname="trader_dashboard"
+        user="trader_dashboard", host="127.0.0.1", dbname="trader_dashboard"
     )
     return c
 
@@ -378,7 +378,8 @@ def chunk_df(df: pd.DataFrame, chunk_size: int) -> list:
 
 def chunk_raw_table(table_name: str, chunk_size: int) -> list:
     """
-    Chunk the raw table data into smaller chunks and insert them into the database table.
+    Chunk the raw table data into smaller chunks and insert them into the
+    database table.
 
     Args:
         table_name (str): The name of the database table.

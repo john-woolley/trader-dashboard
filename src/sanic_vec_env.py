@@ -1,7 +1,8 @@
 """
-This module provides a multiprocess vectorized wrapper for multiple environments using Sanic framework.
-It creates a separate process for each environment, allowing for parallel execution and significant speedup.
-The SanicVecEnv class is a subclass of the VecEnv class from the stable_baselines3 library.
+This module provides a multiprocess vectorized wrapper for multiple
+environments using the Sanic framework. It creates a separate process for each
+environment, allowing for parallel execution and significant speedup. The
+SanicVecEnv class is a subclass of the VecEnv class from stable_baselines3.
 
 Example usage:
     env_fns = [create_env_fn() for _ in range(num_envs)]
@@ -11,14 +12,18 @@ Example usage:
     for _ in range(num_steps):
         actions = model.predict(obs)
         obs, rewards, dones, infos = vec_env.step(actions)
-        # Perform other operations with the observations, rewards, dones, and infos
+
 
 Note:
-    - The number of environments should not exceed the number of logical cores on your CPU for optimal performance.
-    - Only 'forkserver' and 'spawn' start methods are thread-safe, which is important when using non thread-safe libraries.
-      Make sure to wrap the code in an `if __name__ == "__main__":` block when using these start methods.
+    - The number of environments should not exceed the number of logical cores
+      on your CPU for optimal performance.
+    - Only 'forkserver' and 'spawn' start methods are thread-safe, which is
+      important when using non thread-safe libraries. Make sure to wrap the
+      code in an `if __name__ == "__main__":` block when using these start
+      methods.
 
-For more information, refer to the stable_baselines3 documentation on vectorized environments.
+For more information, refer to the stable_baselines3 documentation on
+vectorized environments.
 """
 
 import multiprocessing as mp
@@ -85,12 +90,13 @@ def _worker(
             elif cmd == "get_attr":
                 remote.send(getattr(env, data))
             elif cmd == "set_attr":
-                # type: ignore[func-returns-value]
-                remote.send(setattr(env, data[0], data[1]))
+                setattr(env, data[0], data[1])
+                remote.send(None)
             elif cmd == "is_wrapped":
                 remote.send(is_wrapped(env, data))
             else:
-                raise NotImplementedError(f"`{cmd}` is not implemented in the worker")
+                err = f"`{cmd}` is not implemented in the worker"
+                raise NotImplementedError(err)
         except EOFError:
             break
 
@@ -137,13 +143,14 @@ class SanicVecEnv(VecEnv):
         if start_method is None:
             start_method = "spawn"
         ctx = sanic_app.shared_ctx.mp_ctx
-        self.remotes, self.work_remotes = zip(*[ctx.Pipe() for _ in range(n_envs)])
-        self.processes = []
+        pipes = [ctx.Pipe() for _ in range(n_envs)]
+        self.remotes, self.work_remotes = zip(*pipes)
         for work_remote, remote, env_fn in zip(
             self.work_remotes, self.remotes, env_fns
         ):
             hex_name = md5(
-                str(uniform(0, 1)).encode(), usedforsecurity=False
+                str(uniform(0, 1)).encode(),
+                usedforsecurity=False,  # nosec
             ).hexdigest()
             worker_name = f"RLVecEnv{hex_name[:10]}"
             kwargs = {
@@ -173,17 +180,17 @@ class SanicVecEnv(VecEnv):
         results = [remote.recv() for remote in self.remotes]
         self.waiting = False
         obs, rews, dones, infos, self.reset_infos = zip(*results)  # type: ignore[assignment]
-        # type: ignore[return-value]
         return (
             _flatten_obs(obs, self.observation_space),
             np.stack(rews),
             np.stack(dones),
             infos,
-        )
+        )  # type: ignore[return-value]
 
     def reset(self) -> VecEnvObs:
         for env_idx, remote in enumerate(self.remotes):
-            remote.send(("reset", (self._seeds[env_idx], self._options[env_idx])))
+            args = (self._seeds[env_idx], self._options[env_idx])
+            remote.send(("reset", args))
         results = [remote.recv() for remote in self.remotes]
         obs, self.reset_infos = zip(*results)  # type: ignore[assignment]
         # Seeds and options are only used once
@@ -199,8 +206,6 @@ class SanicVecEnv(VecEnv):
                 remote.recv()
         for remote in self.remotes:
             remote.send(("close", None))
-        for process in self.processes:
-            process.join()
         self.closed = True
 
     def get_images(self) -> Sequence[Optional[np.ndarray]]:
@@ -208,7 +213,8 @@ class SanicVecEnv(VecEnv):
             warnings.warn(
                 (
                     f"The render mode is {self.render_mode}"
-                    "but this method assumes it is `rgb_array` to obtain images."
+                    "but this method assumes it is `rgb_array`"
+                    "to obtain images."
                 )
             )
             return [None for _ in self.remotes]
@@ -245,7 +251,8 @@ class SanicVecEnv(VecEnv):
         """Call instance methods of vectorized environments."""
         target_remotes = self._get_target_remotes(indices)
         for remote in target_remotes:
-            remote.send(("env_method", (method_name, method_args, method_kwargs)))
+            args = (method_name, method_args, method_kwargs)
+            remote.send(("env_method", args))
         return [remote.recv() for remote in target_remotes]
 
     def env_is_wrapped(

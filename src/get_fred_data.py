@@ -1,7 +1,7 @@
 """
 This module provides functions and classes for retrieving and processing data from the FRED API.
 """
-from typing import Union, List, Callable
+from typing import Union, Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -41,7 +41,7 @@ def get_series(series_name: str, pct_chg=False, pct_chg_freq=1):
         pd.Series: The requested series.
     """
     series = (
-        pf.get_series(series_id=series_name, api_key=API_KEY)
+        pd.DataFrame(pf.get_series(series_id=series_name, api_key=API_KEY))
         .set_index("date")
         .value.rename(series_name)
     )
@@ -63,7 +63,10 @@ class DataSet:
     """
 
     def __init__(
-        self, rid: int, series: List[str], pct_chg: Union[bool, List[bool]] = False
+        self,
+        rid: int,
+        series: Sequence[str],
+        pct_chg: Union[bool, Sequence[bool]] = False,
     ):
         self.rid = rid
         self.series = series
@@ -126,7 +129,7 @@ class DataCollection:
         daterange (pd.DatetimeIndex): The date range of the data.
     """
 
-    def __init__(self, datasets: List[Callable]):
+    def __init__(self, datasets: Sequence[Callable]):
         self.datasets = [dataset().get() for dataset in datasets]
         self.data = self.merge_datasets()
         self.min_date = self.data.index.min()
@@ -174,8 +177,8 @@ class DefinedDataSet:
 
     rid = 0
     date_file_offset = 0
-    series = []
-    pct_chg = False
+    series: list = []
+    pct_chg: bool | Sequence[bool] = False
 
     @classmethod
     def get(cls):
