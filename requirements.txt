@@ -6,3 +6,4 @@ reactpy[sanic]
 sqlalchemy
 psycopg2
 pyfredapi
+pytest
