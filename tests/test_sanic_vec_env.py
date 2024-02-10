@@ -1,11 +1,15 @@
+import multiprocessing as mp
+
+from unittest.mock import Mock
+
 import pytest
+import gymnasium as gym
+
 from stable_baselines3.common.vec_env import DummyVecEnv
 from sanic import Request
+
 from src.sanic_vec_env import SanicVecEnv
-from unittest.mock import Mock
-import multiprocessing as mp
 from src.db import add_job
-import gymnasium as gym
 
 
 class MockEnvironment(gym.Env):

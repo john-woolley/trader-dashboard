@@ -149,8 +149,8 @@ class SanicVecEnv(VecEnv):
             self.work_remotes, self.remotes, env_fns
         ):
             hex_name = md5(
-                str(uniform(0, 1)).encode(),
-                usedforsecurity=False,  # nosec
+                str(uniform(0, 1)).encode(),  # nosec
+                usedforsecurity=False,
             ).hexdigest()
             worker_name = f"RLVecEnv{hex_name[:10]}"
             kwargs = {
