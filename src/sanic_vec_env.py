@@ -1,9 +1,10 @@
 import multiprocessing as mp
 import warnings
 from collections import OrderedDict
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
+from typing import (
+    Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
+)
 from sanic import Sanic
-from sanic.log import logger
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
@@ -22,8 +23,8 @@ from stable_baselines3.common.vec_env.patch_gym import _patch_env
 
 
 def _worker(
-    remote: mp.connection.Connection,
-    parent_remote: mp.connection.Connection,
+    remote: mp.connection.Connection,  # type: ignore[no-untyped-def]
+    parent_remote: mp.connection.Connection,  # type: ignore[no-untyped-def]
     env_fn_wrapper: CloudpickleWrapper,
 ) -> None:
     # Import here to avoid a circular import
@@ -78,11 +79,13 @@ def _worker(
 
 class SanicVecEnv(VecEnv):
     """
-    Creates a multiprocess vectorized wrapper for multiple environments, distributing each environment to its own
-    process, allowing significant speed up when the environment is computationally complex.
+    Creates a multiprocess vectorized wrapper for multiple environments,
+    distributing each environment to its own process, allowing significant
+    speed up when the environment is computationally complex.
 
-    For performance reasons, if your environment is not IO bound, the number of environments should not exceed the
-    number of logical cores on your CPU.
+    For performance reasons, if your environment is not IO bound,
+    the number of environments should not exceed the number of logical cores
+    on your CPU.
 
     .. warning::
 
@@ -96,12 +99,19 @@ class SanicVecEnv(VecEnv):
 
     :param env_fns: Environments to run in subprocesses
     :param start_method: method used to start the subprocesses.
-           Must be one of the methods returned by multiprocessing.get_all_start_methods().
-           Defaults to 'forkserver' on available platforms, and 'spawn' otherwise.
+           Must be one of the methods returned by
+             multiprocessing.get_all_start_methods().
+           Defaults to 'forkserver' on available platforms,
+             and 'spawn' otherwise.
     """
 
-    def __init__(self, env_fns: List[Callable[[], gym.Env]], sanic_app: Sanic, jobname: str, start_method: Optional[str] = None):
-        
+    def __init__(
+        self,
+        env_fns: List[Callable[[], gym.Env]],
+        sanic_app: Sanic,
+        jobname: str,
+        start_method: Optional[str] = None,
+    ):
         self.waiting = False
         self.closed = False
         n_envs = len(env_fns)
@@ -112,11 +122,23 @@ class SanicVecEnv(VecEnv):
         self.remotes, self.work_remotes = zip(
             *[ctx.Pipe() for _ in range(n_envs)])
         self.processes = []
-        for work_remote, remote, env_fn in zip(self.work_remotes, self.remotes, env_fns):
-            worker_name = f'RLVecEnv{md5(str(uniform(0,1)).encode()).hexdigest()[:10]}'
-            kwargs = {'remote': work_remote, 'parent_remote': remote,
-                      'env_fn_wrapper': CloudpickleWrapper(env_fn)}
-            sanic_app.m.manage(ident=worker_name, func=_worker, kwargs=kwargs, workers=1, restartable=True)
+        for work_remote, remote, env_fn in zip(
+            self.work_remotes, self.remotes, env_fns
+        ):
+            hex_name = md5(str(uniform(0, 1)).encode()).hexdigest()
+            worker_name = f"RLVecEnv{hex_name[:10]}"
+            kwargs = {
+                "remote": work_remote,
+                "parent_remote": remote,
+                "env_fn_wrapper": CloudpickleWrapper(env_fn),
+            }
+            sanic_app.m.manage(
+                ident=worker_name,
+                func=_worker,
+                kwargs=kwargs,
+                workers=1,
+                restartable=True,
+            )
             db.add_worker(worker_name, jobname)
         self.remotes[0].send(("get_spaces", None))
         observation_space, action_space = self.remotes[0].recv()
@@ -134,7 +156,12 @@ class SanicVecEnv(VecEnv):
         obs, rews, dones, infos, self.reset_infos = zip(
             *results)  # type: ignore[assignment]
         # type: ignore[return-value]
-        return _flatten_obs(obs, self.observation_space), np.stack(rews), np.stack(dones), infos
+        return (
+            _flatten_obs(obs, self.observation_space),
+            np.stack(rews),
+            np.stack(dones),
+            infos,
+        )
 
     def reset(self) -> VecEnvObs:
         for env_idx, remote in enumerate(self.remotes):
@@ -161,9 +188,10 @@ class SanicVecEnv(VecEnv):
 
     def get_images(self) -> Sequence[Optional[np.ndarray]]:
         if self.render_mode != "rgb_array":
-            warnings.warn(
-                f"The render mode is {self.render_mode}, but this method assumes it is `rgb_array` to obtain images."
-            )
+            warnings.warn((
+                f"The render mode is {self.render_mode}"
+                "but this method assumes it is `rgb_array` to obtain images."
+            ))
             return [None for _ in self.remotes]
         for pipe in self.remotes:
             # gather render return from subprocesses
@@ -171,14 +199,18 @@ class SanicVecEnv(VecEnv):
         outputs = [pipe.recv() for pipe in self.remotes]
         return outputs
 
-    def get_attr(self, attr_name: str, indices: VecEnvIndices = None) -> List[Any]:
+    def get_attr(
+            self, attr_name: str, indices: VecEnvIndices = None
+    ) -> List[Any]:
         """Return attribute from vectorized environment (see base class)."""
         target_remotes = self._get_target_remotes(indices)
         for remote in target_remotes:
             remote.send(("get_attr", attr_name))
         return [remote.recv() for remote in target_remotes]
 
-    def set_attr(self, attr_name: str, value: Any, indices: VecEnvIndices = None) -> None:
+    def set_attr(
+        self, attr_name: str, value: Any, indices: VecEnvIndices = None
+    ) -> None:
         """Set attribute inside vectorized environments (see base class)."""
         target_remotes = self._get_target_remotes(indices)
         for remote in target_remotes:
@@ -186,7 +218,13 @@ class SanicVecEnv(VecEnv):
         for remote in target_remotes:
             remote.recv()
 
-    def env_method(self, method_name: str, *method_args, indices: VecEnvIndices = None, **method_kwargs) -> List[Any]:
+    def env_method(
+        self,
+        method_name: str,
+        *method_args,
+        indices: VecEnvIndices = None,
+        **method_kwargs,
+    ) -> List[Any]:
         """Call instance methods of vectorized environments."""
         target_remotes = self._get_target_remotes(indices)
         for remote in target_remotes:
@@ -194,7 +232,9 @@ class SanicVecEnv(VecEnv):
                 ("env_method", (method_name, method_args, method_kwargs)))
         return [remote.recv() for remote in target_remotes]
 
-    def env_is_wrapped(self, wrapper_class: Type[gym.Wrapper], indices: VecEnvIndices = None) -> List[bool]:
+    def env_is_wrapped(
+        self, wrapper_class: Type[gym.Wrapper], indices: VecEnvIndices = None
+    ) -> List[bool]:
         """Check if worker environments are wrapped with a given wrapper"""
         target_remotes = self._get_target_remotes(indices)
         for remote in target_remotes:
@@ -213,32 +253,44 @@ class SanicVecEnv(VecEnv):
         return [self.remotes[i] for i in indices]
 
 
-def _flatten_obs(obs: Union[List[VecEnvObs], Tuple[VecEnvObs]], space: spaces.Space) -> VecEnvObs:
+def _flatten_obs(
+    obs: Union[List[VecEnvObs], Tuple[VecEnvObs]], space: spaces.Space
+) -> VecEnvObs:
     """
     Flatten observations, depending on the observation space.
 
     :param obs: observations.
                 A list or tuple of observations, one per environment.
-                Each environment observation may be a NumPy array, or a dict or tuple of NumPy arrays.
+                Each environment observation may be a NumPy array,
+                or a dict or tuple of NumPy arrays.
     :return: flattened observations.
-            A flattened NumPy array or an OrderedDict or tuple of flattened numpy arrays.
-            Each NumPy array has the environment index as its first axis.
+            A flattened NumPy array or an OrderedDict or tuple of flattened
+            numpy arrays. Each NumPy array has the environment index as its
+              first axis.
     """
     assert isinstance(
-        obs, (list, tuple)), "expected list or tuple of observations per environment"
+        obs, (list, tuple)
+    ), "expected list or tuple of observations per environment"
     assert len(obs) > 0, "need observations from at least one environment"
 
     if isinstance(space, spaces.Dict):
         assert isinstance(
-            space.spaces, OrderedDict), "Dict space must have ordered subspaces"
+            space.spaces, OrderedDict
+        ), "Dict space must have ordered subspaces"
         assert isinstance(
-            obs[0], dict), "non-dict observation for environment with Dict observation space"
-        return OrderedDict([(k, np.stack([o[k] for o in obs])) for k in space.spaces.keys()])
+            obs[0], dict
+        ), "non-dict observation for environment with Dict observation space"
+        return OrderedDict(
+            [(k, np.stack([o[k] for o in obs]))  # type: ignore[index]
+             for k in space.spaces.keys()]
+        )
     elif isinstance(space, spaces.Tuple):
         assert isinstance(
-            obs[0], tuple), "non-tuple observation for environment with Tuple observation space"
+            obs[0], tuple
+        ), "non-tuple observation for environment with Tuple observation space"
         obs_len = len(space.spaces)
         # type: ignore[index]
-        return tuple(np.stack([o[i] for o in obs]) for i in range(obs_len))
+        return tuple(np.stack([o[i] for o in obs])  # type: ignore[index]
+                     for i in range(obs_len))
     else:
         return np.stack(obs)  # type: ignore[arg-type]

@@ -1,5 +1,5 @@
 import pandas as pd
-import numpy as np 
+import numpy as np
 from typing import Union
 
 used_cols = [
@@ -59,6 +59,7 @@ macro_cols = [
     "DEXCAUS",
 ]
 
+
 def process_data(file_path):
     df = (
         pd.read_csv(file_path, parse_dates=True)
@@ -68,11 +69,10 @@ def process_data(file_path):
         .set_index(["date", "ticker"])
         .sort_index()
     ).drop("dimension", axis=1)
-    df = df.dropna(subset=['datekey'])
+    df = df.dropna(subset=["datekey"])
     df["spot"] = df["closeadj"]
     df["capexratio"] = df["capex"] / df["equity"]
     df = df.dropna(subset=["spot"])
-
 
     df = df[used_cols + macro_cols + ["spot"]]
     df["release_indicator"] = (
@@ -83,8 +83,9 @@ def process_data(file_path):
     df["intraday_vol"] = np.log(df["high"] / df["close"]) * np.log(
         df["high"] / df["open"]
     ) + np.log(df["low"] / df["close"]) * np.log(df["low"] / df["open"])
-    
+
     return df
+
 
 def get_cv_dfs(df, cv_periods):
     cv_dfs = [
@@ -101,21 +102,35 @@ def get_cv_dfs(df, cv_periods):
     ]
     return cv_dfs
 
+
 def train_test_split(cv_dfs, i):
-    train = pd.concat(cv_dfs[:i + 1])
+    train = pd.concat(cv_dfs[: i + 1])
     test = cv_dfs[i + 1]
     train_mean = train[used_cols + macro_cols].mean()
     train_std = train[used_cols + macro_cols].std()
-    train[used_cols + macro_cols] = (train[used_cols + macro_cols] - train_mean) / train_std
-    test[used_cols + macro_cols] = (test[used_cols + macro_cols] - train_mean) / train_std
+    train[used_cols + macro_cols] = (
+        train[used_cols + macro_cols] - train_mean
+    ) / train_std
+    test[used_cols + macro_cols] = (
+        test[used_cols + macro_cols] - train_mean
+    ) / train_std
     return train, test
 
+
 class CVIngestionPipeline:
-    def __init__(self, file_path, cv_periods=5, cv_period_length=0, start_date: Union[str, None] = None):
+    def __init__(
+        self,
+        file_path,
+        cv_periods=5,
+        cv_period_length=0,
+        start_date: Union[str, None] = None,
+    ):
         if start_date:
             self.df = process_data(file_path).loc[start_date:]
         if cv_period_length:
-            self.cv_periods = int(len(self.df.index.get_level_values("date").unique()) / cv_period_length)
+            self.cv_periods = int(
+                len(self.df.index.get_level_values("date").unique()) / cv_period_length
+            )
         else:
             self.cv_periods = cv_periods
         self.cv_dfs = get_cv_dfs(self.df, self.cv_periods)

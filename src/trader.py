@@ -1,4 +1,4 @@
-# Description: Delta hedging environment for Soft Actor Critic (SAC) reinforcement learning
+# Description: Delta hedging environment for Soft Actor Critic (SAC) RL model
 from src.ingestion import macro_cols, used_cols, CVIngestionPipeline
 import numpy as np
 import gymnasium as gym
@@ -9,10 +9,10 @@ import pandas as pd
 from stable_baselines3 import SAC, PPO
 from functools import partial
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
-import pandas as pd
 from scipy.stats import yeojohnson
 from typing import Union
 from sanic.log import logger
+
 
 def get_percentile(val, M, axis=0):
     return (M > val).argmax(axis) / M.shape[axis]
@@ -34,12 +34,18 @@ class Trader(gym.Env):
         Initializes the Trader environment.
 
         Parameters:
-        - data (dict[pd.DataFrame]): A dictionary of pandas DataFrames containing the data for each asset.
-        - initial_balance (float): The initial balance of the trader. Default is 100000.
-        - n_lags (int): The number of lagged observations to include in the state. Default is 10.
-        - transaction_cost (float): The transaction cost as a percentage of the traded amount. Default is 0.0025.
-        - ep_length (int): The length of each episode in trading steps. Default is 252.
-        - test (bool): Whether the environment is in test mode or not. Default is False.
+        - data (dict[pd.DataFrame]): A dictionary of pandas DataFrames
+          containing the data for each asset.
+        - initial_balance (float): The initial balance of the trader.
+          Default is 100000.
+        - n_lags (int): The number of lagged observations to include in the
+          state. Default is 10.
+        - transaction_cost (float): The transaction cost as a percentage of
+          the traded amount. Default is 0.0025.
+        - ep_length (int): The length of each episode in trading steps.
+          Default is 252.
+        - test (bool): Whether the environment is in test mode or not.
+          Default is False.
         """
         super().__init__()
         self.render_mode = render_mode
@@ -161,7 +167,8 @@ class Trader(gym.Env):
         Resets the environment to its initial state.
 
         Parameters:
-        - seed (int): The seed value for random number generation. Default is 42.
+        - seed (int): The seed value for random number generation.
+          Default is 42.
 
         Returns:
         - observation (object): The initial observation of the environment.
@@ -176,9 +183,8 @@ class Trader(gym.Env):
             self.period = 0
         else:
             self.period = random.randint(0, len(self.dates) - self.ep_length)
-        self.spot = self.data.loc[
-            self.dates[self.period + self.current_step], "spot"
-        ]
+        self.spot = self.data.loc[self.dates[self.period +
+                                             self.current_step], "spot"]
         assert isinstance(self.spot, pd.Series)
         self.spot = self.spot.values
         self.balance = self.initial_balance
@@ -201,11 +207,14 @@ class Trader(gym.Env):
         macro_len = len(macro_cols)
         curr_date = self.dates[self.period + self.current_step]
         if self.current_step < 10:
-            prev_dates = self.dates[self.period:self.period +
-                                    self.current_step+1]
+            prev_dates = self.dates[self.period: self.period +
+                                    self.current_step + 1]
         else:
-            prev_dates = self.dates[self.period +
-                                    self.current_step-10: self.period+self.current_step + 1]
+            prev_dates = self.dates[
+                self.period + self.current_step - 10: self.period
+                + self.current_step
+                + 1
+            ]
         spot = self.data.loc[curr_date, "spot"]
         spot_window = self.data.loc[prev_dates, "spot"].to_frame()
         assert isinstance(spot_window, pd.DataFrame)
@@ -283,12 +292,9 @@ class Trader(gym.Env):
         float: The return volatility.
         """
         assert isinstance(self.return_series, np.ndarray)
-        try:
-            std = np.std(self.return_series)
-            assert isinstance(std, float)
-            return std
-        except:
-            return 1
+        std = np.std(self.return_series)
+        assert isinstance(std, float)
+        return std
 
     def _get_reward(self) -> np.ndarray:
         """
@@ -306,7 +312,8 @@ class Trader(gym.Env):
 
     def _accrue_interest(self) -> None:
         """
-        Accrues interest on the account balance based on the specified interest rate.
+        Accrues interest on the account balance based on the specified
+        interest rate.
 
         Returns:
         None
@@ -346,7 +353,8 @@ class Trader(gym.Env):
             action (list): A list of actions to be taken for each asset.
 
         Returns:
-            tuple: A tuple containing the observation, reward, done flag, and additional info.
+            tuple: A tuple containing the observation, reward, done flag,
+            and additional info.
         """
         assert isinstance(self.spot, np.ndarray)
         self.paid_slippage = 0
@@ -365,9 +373,14 @@ class Trader(gym.Env):
             target_weight = target_weights[idx]
             deviations[idx] = target_weight - actual_weight
         sum_deviation = np.sum(np.abs(deviations))
-        deviations = deviations / sum_deviation * \
-            np.min([sum_deviation, max(self.balance /
-                   self.current_portfolio_value, 0.01)])
+        deviations = (
+            deviations
+            / sum_deviation
+            * np.min(
+                [sum_deviation, max(
+                    self.balance / self.current_portfolio_value, 0.01)]
+            )
+        )
         for idx, deviation in enumerate(deviations):
             net = deviation * self.current_portfolio_value
             amount = net / self.spot[idx]
@@ -434,12 +447,13 @@ class Trader(gym.Env):
 
 if __name__ == "__main__":
     model_name = "SAC"
-    model = locals()[model_name]
+    model = {'SAC': SAC, 'PPO': PPO}[model_name]
     ep_length = 252
     cv_periods = 20
     train_start_date = "2019-04-03"
     data = CVIngestionPipeline(
-        "data/master.csv", cv_periods, start_date=train_start_date)
+        "data/master.csv", cv_periods, start_date=train_start_date
+    )
     for i in range(0, len(data)):
         train, test = tuple(*iter(data))
         mfile = f"stock_allocator_{ep_length}d"
@@ -448,8 +462,11 @@ if __name__ == "__main__":
                             for _ in range(64)])
         env = VecMonitor(env, log_dir)
         policy_kwargs = dict(
-            net_arch=dict(pi=[4096, 2048, 1024, 1024], vf=[
-                          4096, 2048,  1024, 1024], qf=[4096, 2048, 1024, 1024])
+            net_arch=dict(
+                pi=[4096, 2048, 1024, 1024],
+                vf=[4096, 2048, 1024, 1024],
+                qf=[4096, 2048, 1024, 1024],
+            )
         )
         model_train = model(
             "MlpPolicy",

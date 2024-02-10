@@ -2,21 +2,25 @@ import sqlalchemy as sa
 import psycopg2
 import datetime
 
-#Create a pool
+# Create a pool
 pool = sa.pool.QueuePool(
     lambda: psycopg2.connect(
         dbname="trader_dashboard",
         user="postgres",
         password="trader_dashboard",
         host="0.0.0.0",
-        port=5432
-    ), max_overflow=10, pool_size=5
-    )
+        port=5432,
+    ),
+    max_overflow=10,
+    pool_size=5,
+)
 
-pool_engine = sa.create_engine("postgresql://postgres:trader_dashboard@0.0.0.0:5432/trader_dashboard", pool=pool)
+pool_engine = sa.create_engine(
+    "postgresql://postgres:trader_dashboard@0.0.0.0:5432/trader_dashboard", pool=pool
+)
 pool_conn = pool_engine.connect()
 
-#create table trades
+# create table trades
 metadata = sa.MetaData()
 table = sa.Table(
     "trades",
@@ -30,8 +34,8 @@ table = sa.Table(
     sa.Column("order_type", sa.String(10)),
     sa.Column("exchange", sa.String(10)),
     sa.Column("status", sa.String(10)),
-    sa.Column("user_id", sa.Integer)
-    )
+    sa.Column("user_id", sa.Integer),
+)
 metadata.create_all(pool_conn)
 
 # generate records
@@ -45,6 +49,6 @@ for i in range(10):
         order_type="market",
         exchange="NASDAQ",
         status="filled",
-        user_id=1
+        user_id=1,
     )
     pool_conn.execute(ins)
