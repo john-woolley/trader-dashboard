@@ -93,9 +93,8 @@ def stop_handler(request: Request):
         pool = sa.pool.QueuePool(getconn, max_overflow=0, pool_size=24)
         conn = sa.create_engine('postgresql://trader_dashboard/trader_dashboard', pool=pool).connect()
         worker_query = sa.select("*").select_from(sa.table("workers"))
-        workers = list(map(lambda x: x[1], conn.execute(worker_query).fetchall()))
-        for worker in workers:
-            request.app.m.restart(worker)
+        workers = ','.join(list(map(lambda x: x[1], conn.execute(worker_query).fetchall())))
+        request.app.m.terminate_worker(workers)
     except Exception as e:
         logger.info("Error stopping workers")
         logger.info(e)

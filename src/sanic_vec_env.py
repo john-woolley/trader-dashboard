@@ -130,8 +130,7 @@ class SanicVecEnv(VecEnv):
             logger.info(f"Queued worker {worker_name}")
 
             insert_stmt = sa.insert(sa.Table('workers', self.metadata))
-            worker_pname = f'Sanic-{worker_name}-0'
-            insert_stmt = insert_stmt.values(name=worker_pname, status='queued')
+            insert_stmt = insert_stmt.values(name=worker_name, status='queued')
             self.db_conn.execute(insert_stmt)
             self.db_conn.commit()
 
