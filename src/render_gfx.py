@@ -1,3 +1,11 @@
+"""
+This module contains functions for rendering graphics related to trading data.
+
+Functions:
+- moving_average(values: np.ndarray, window: int) -> np.ndarray:
+  Smooths values by doing a moving average.
+"""
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -5,12 +13,16 @@ from stable_baselines3.common.monitor import load_results
 from stable_baselines3.common.results_plotter import ts2xy
 
 
-def moving_average(values: np.ndarray, window: int):
+def moving_average(values: np.ndarray, window: int) -> np.ndarray:
     """
-    Smooth values by doing a moving average
-    :param values: (numpy array)
-    :param window: (int)
-    :return: (numpy array)
+    Smooth values by doing a moving average.
+
+    Args:
+        values (np.ndarray): The values to be smoothed.
+        window (int): The size of the moving average window.
+
+    Returns:
+        np.ndarray: The smoothed values.
     """
     weights = np.repeat(1.0, window) / window
     return np.convolve(values, weights, "valid")
@@ -20,12 +32,12 @@ x, y = ts2xy(load_results("log/252_days/SAC"), "timesteps")
 y = moving_average(y, window=1000)
 x = x[-len(y):]
 zipped = list(zip(x, y))
-df = pd.DataFrame(zipped, columns=["timesteps", "rewards"])
-df = df.set_index("timesteps")
+DF = pd.DataFrame(zipped, columns=["timesteps", "rewards"])
+DF = DF.set_index("timesteps")
 # df = df.clip(lower=-200)
 fig = plt.figure("Learning Curve Smoothed")
 ax = fig.add_subplot(111)
-ax.plot(df.index, df["rewards"], label="Smoothed Rewards")
+ax.plot(DF.index, DF.get("rewards"), label="Smoothed Rewards")
 plt.title("Learning Curve Smoothed")
 plt.show()
 plt.savefig("test_render_252d.png")

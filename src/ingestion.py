@@ -1,6 +1,19 @@
+"""
+
+This module contains functions and classes for data ingestion and preprocessing.
+
+Functions:
+- process_data(file_path): Reads and preprocesses the data from a CSV file.
+- get_cv_dfs(df, cv_periods): Splits the data into cross-validation sets.
+- train_test_split(cv_dfs, i): Splits the cross-validation sets into train and test sets.
+
+Classes:
+- CVIngestionPipeline: A class for creating a cross-validation ingestion pipeline.
+
+"""
+from typing import Union
 import pandas as pd
 import numpy as np
-from typing import Union
 
 used_cols = [
     "open",
@@ -61,6 +74,15 @@ macro_cols = [
 
 
 def process_data(file_path):
+    """
+    Process the data from a CSV file and perform various transformations.
+
+    Args:
+        file_path (str): The path to the CSV file.
+
+    Returns:
+        pandas.DataFrame: The processed DataFrame containing the transformed data.
+    """
     df = (
         pd.read_csv(file_path, parse_dates=True)
         .set_index("ticker")
@@ -88,6 +110,16 @@ def process_data(file_path):
 
 
 def get_cv_dfs(df, cv_periods):
+    """
+    Get cross-validation dataframes from a given dataframe.
+
+    Parameters:
+    df (pandas.DataFrame): The input dataframe.
+    cv_periods (int): The number of cross-validation periods.
+
+    Returns:
+    list: A list of cross-validation dataframes.
+    """
     cv_dfs = [
         df.loc[
             df.index.get_level_values("date").unique()[
@@ -104,6 +136,16 @@ def get_cv_dfs(df, cv_periods):
 
 
 def train_test_split(cv_dfs, i):
+    """
+    Split the data into training and testing sets for cross-validation.
+
+    Parameters:
+    cv_dfs (list): List of dataframes for cross-validation.
+    i (int): Index of the current fold.
+
+    Returns:
+    tuple: A tuple containing the training and testing dataframes.
+    """
     train = pd.concat(cv_dfs[: i + 1])
     test = cv_dfs[i + 1]
     train_mean = train[used_cols + macro_cols].mean()
@@ -118,6 +160,34 @@ def train_test_split(cv_dfs, i):
 
 
 class CVIngestionPipeline:
+    """
+    A cross-validation ingestion pipeline for trading data.
+
+    Parameters:
+    - file_path (str): The path to the data file.
+    - cv_periods (int): The number of cross-validation periods.
+    - cv_period_length (int): The length of each cross-validation period.
+    - start_date (str or None): The start date for data processing.
+      If None, all data is processed.
+
+    Attributes:
+    - df (DataFrame): The processed data.
+    - cv_periods (int): The number of cross-validation periods.
+    - cv_dfs (list): A list of cross-validation dataframes.
+    - i (int): The current iteration index.
+
+    Methods:
+    - __iter__(): Returns an iterator for cross-validation train-test splits.
+    - __len__(): Returns the number of cross-validation periods.
+
+    Usage:
+    ```
+    pipeline = CVIngestionPipeline(file_path, cv_periods=5, cv_period_length=0,
+      start_date=None)
+    for train, test in pipeline:
+        # Perform cross-validation training and testing
+    ```
+    """
     def __init__(
         self,
         file_path,
@@ -138,7 +208,7 @@ class CVIngestionPipeline:
 
     def __iter__(self):
         if self.i == self.cv_periods - 1:
-            raise StopIteration
+            return
         train, test = train_test_split(self.cv_dfs, self.i)
         yield train, test
         self.i += 1

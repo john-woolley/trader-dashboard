@@ -1,21 +1,101 @@
 # Description: Delta hedging environment for Soft Actor Critic (SAC) RL model
-from src.ingestion import macro_cols, used_cols
+
+"""
+This module contains the implementation of the Trader class, which represents
+the delta hedging environment for the Soft Actor Critic (SAC) RL model. The
+Trader class is a subclass of the gym.Env class from the gymnasium library.
+
+The Trader environment simulates a trading environment where an agent can
+perform buy and sell actions on a set of assets. The environment provides
+observations of the current state, which include lagged observations of asset
+prices and other market indicators. The agent's goal is to maximize its
+portfolio value by making optimal trading decisions.
+
+The Trader class provides methods for initializing the environment, resetting
+it to its initial state, and executing trades. It also calculates various
+metrics such as portfolio value, position weights, and rewards. The class
+implements the gym.Env interface, which allows it to be used with reinforcement
+learning algorithms.
+
+Example usage:
+
+# Create a Trader environment
+data = load_data()  # Load market data
+trader = Trader(data)
+
+# Reset the environment
+observation, info = trader.reset()
+
+# Execute a trade
+amount = 1000  # Trade amount
+sign = 1  # Buy
+underlying = 0  # Index of the underlying asset
+trader._trade(amount, sign, underlying)
+
+# Get the current portfolio value
+portfolio_value = trader.current_portfolio_value
+
+# Get the position weights
+position_weights = trader.net_position_weights
+
+# Get the reward for the current step
+reward = trader._get_reward()
+
+"""
+
+import random
+from typing import Union
+from collections import deque
+
 import numpy as np
 import gymnasium as gym
-import random
-from gymnasium import spaces
-from collections import deque
 import pandas as pd
+
+from gymnasium import spaces
 from scipy.stats import yeojohnson
-from typing import Union
 from sanic.log import logger
 
+from src.ingestion import macro_cols, used_cols
 
-def get_percentile(val, M, axis=0):
-    return (M > val).argmax(axis) / M.shape[axis]
+
+def get_percentile(val, m, axis=0):
+    """
+    Calculate the percentile of a value in an array along a specified axis.
+
+    Parameters:
+    val (float): The value for which the percentile is calculated.
+    m (numpy.ndarray): The input array.
+    axis (int, optional): The axis along which the percentile is calculated.
+    Default is 0.
+
+    Returns:
+    float: The percentile of the value in the array.
+
+    """
+    return (m > val).argmax(axis) / m.shape[axis]
 
 
 class Trader(gym.Env):
+    """
+    The Trader class represents an environment for trading simulation.
+
+    Parameters:
+    - data (dict[pd.DataFrame]): A dictionary of pandas DataFrames
+        containing the data for each asset.
+    - initial_balance (float): The initial balance of the trader.
+        Default is 100000.
+    - n_lags (int): The number of lagged observations to include in the
+        state. Default is 10.
+    - transaction_cost (float): The transaction cost as a percentage of
+        the traded amount. Default is 0.0025.
+    - ep_length (int): The length of each episode in trading steps.
+        Default is 252.
+    - test (bool): Whether the environment is in test mode or not.
+        Default is False.
+    - risk_aversion (float): The risk aversion parameter for calculating
+        the reward. Default is 0.9.
+    - render_mode (str): The rendering mode for visualization. Default is None.
+    """
     def __init__(
         self,
         data: pd.DataFrame,
@@ -74,6 +154,18 @@ class Trader(gym.Env):
         self.net_leverage = np.zeros(self.no_symbols)
         self.model_portfolio = np.zeros(self.no_symbols)
         self.spot = np.zeros(self.no_symbols)
+        self.prev_spot = np.zeros(self.no_symbols)
+        self.vol_ests = np.array([0.1] * self.no_symbols)
+        self.return_series = np.array([])
+        self.var = 0
+        self.log_ret = 0
+        self.state_buffer = deque([], self.buffer_len)
+        self.paid_slippage = 0
+        self.short_leverage = 0.05
+        self.long_leverage = 1.0
+        self.rate = 0.01
+        self.prev_portfolio_value = 0
+        self.period = 0
 
     @property
     def current_portfolio_value(self):
@@ -136,14 +228,29 @@ class Trader(gym.Env):
 
     @property
     def current_index(self):
+        """
+        Returns the current index by adding the period to the current step.
+        """
         return self.period + self.current_step
 
     @property
     def current_date(self):
+        """
+        Returns the current date from the list of dates.
+
+        Returns:
+            str: The current date.
+        """
         return self.dates[self.current_index]
 
     @property
     def model_portfolio_value(self):
+        """
+        Calculates the total value of the model portfolio.
+
+        Returns:
+            float: The total value of the model portfolio.
+        """
         return np.sum(self.model_portfolio)
 
     def _get_model_portfolio_weights(self):
@@ -436,7 +543,12 @@ class Trader(gym.Env):
             f"leverage_{self.symbols[i]}": self.net_position_values[i]
             for i in range(self.no_symbols)
         }
-        state_dict = {**state_dict, **net_lev_dict}
+        action_dict = {
+            f"action_{self.symbols[i]}": action[i]
+            for i in range(self.no_symbols)
+        
+        }
+        state_dict = {**state_dict, **net_lev_dict, **action_dict}
         step_df = pd.DataFrame.from_dict(state_dict)
         self.render_df = pd.concat(
             [self.render_df, step_df], ignore_index=True)
