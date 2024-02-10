@@ -4,7 +4,7 @@ import sanic
 from reactpy.backend.sanic import configure
 from sanic.log import logger
 from sanic import Request
-from sanic import json
+from sanic import json, redirect
 import multiprocessing as mp
 import os
 from src.sanic_vec_env import SanicVecEnv
@@ -14,6 +14,7 @@ from stable_baselines3 import SAC as model
 from stable_baselines3.common.vec_env import VecMonitor
 import src.db as db
 import numpy as np
+import pandas as pd
 
 CONN = "postgresql+psycopg2://trader_dashboard@0.0.0.0:5432/trader_dashboard"
 app = Sanic(__name__)
@@ -39,6 +40,24 @@ async def main_process_start(app):
     logger.debug("Created new jobs table")
     db.create_workers_table()
     logger.debug("Created new workers table")
+
+
+@app.get("/upload_csv")
+def upload_csv(request: Request):
+    input_path = request.args.get("file")
+    output_path = request.args.get("output")
+    with open(input_path, "r") as f:
+        input_file = f.read()
+    if not output_path:
+        output_path = input_path.split("/")[-1].split(".")[0]
+    file_path = os.path.join(app_path, 'data', output_path)
+    logger.info(f"Uploading {input_path} to {file_path}")
+    with open(file_path, "w") as f:
+        f.write(input_file)
+    logger.info(f"Uploaded {input_path} to {file_path}")
+    df = pd.read_csv(file_path, parse_dates=True)
+    db.insert_raw_table(df, output_path)
+    return json({"status": "success"})
 
 
 @app.get("/start")
