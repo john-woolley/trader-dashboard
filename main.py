@@ -58,6 +58,7 @@ def upload_csv(request: Request):
     logger.info(f"Uploaded {input_path} to {file_path}")
     df = pd.read_csv(file_path, parse_dates=parse_dates, index_col=index_col)
     db.insert_raw_table(df, output_path)
+    logger.info(f"Inserted {output_path} into database as raw table")
     return json({"status": "success"})
 
 

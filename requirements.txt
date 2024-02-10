@@ -1,0 +1,7 @@
+sanic
+stable_baselines3
+scipy
+matplotlib
+reactpy[sanic]
+sqlalchemy
+psycopg2

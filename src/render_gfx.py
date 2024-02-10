@@ -18,7 +18,7 @@ def moving_average(values: np.ndarray, window: int):
 
 x, y = ts2xy(load_results("log/252_days/SAC"), "timesteps")
 y = moving_average(y, window=1000)
-x = x[-len(y) :]
+x = x[-len(y):]
 zipped = list(zip(x, y))
 df = pd.DataFrame(zipped, columns=["timesteps", "rewards"])
 df = df.set_index("timesteps")
@@ -38,7 +38,8 @@ plt.savefig("test_render_252d.png")
 # df["net_leverage"] = net_leverage
 # df["gross_leverage"] = gross_leverage
 # fig, ax = plt.subplots(figsize=(18, 6))
-# df.plot(y="market_value", use_index=True, ax=ax, color="lightgrey", secondary_y=True)
+# df.plot(y="market_value",
+# use_index=True, ax=ax, color="lightgrey", secondary_y=True)
 # df.plot(y="gross_leverage", use_index=True, ax=ax, color="blue")
 # df.plot(y="net_leverage", use_index=True, ax=ax, color="red")
 # plt.title("Portfolio Leverage")
