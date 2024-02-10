@@ -16,13 +16,13 @@ trader-dashboard
 .. |Pylint| image:: https://github.com/john-woolley/trader-dashboard/actions/workflows/pylint.yml/badge.svg?branch=main
    :target: https://github.com/john-woolley/trader-dashboard/actions/workflows/pylint.yml
 .. |Code style ruff| image:: https://img.shields.io/badge/code%20style-ruff-000000.svg
-    :target: https://docs.astral.sh/ruff/
+   :target: https://docs.astral.sh/ruff/
 .. |PyPI version| image:: https://img.shields.io/pypi/pyversions/sanic.svg
-   :target: https://pypi.python.org/pypi/sanic/
+   :alt: CPython
 .. |Tests| image:: https://github.com/john-woolley/trader-dashboard/actions/workflows/tests.yml/badge.svg?branch=main
    :target: https://github.com/john-woolley/trader-dashboard/actions/workflows/tests.yml
 .. |Supported implementations| image:: https://img.shields.io/pypi/implementation/sanic.svg
-    :alt: Supported implementations
+    :alt: 3.8, 3.9, 3.10, 3.11
 .. end-badges
 
 =======================================================
