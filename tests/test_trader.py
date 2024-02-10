@@ -4,8 +4,8 @@ import pandas as pd
 
 # Load market data
 data = pd.read_csv("tests/data.csv", parse_dates=True, index_col=["date", "ticker"])
-data['spot'] = data['closeadj']
-data['capexratio'] = data['capex'] / data['equity']
+data["spot"] = data["closeadj"]
+data["capexratio"] = data["capex"] / data["equity"]
 
 
 @pytest.fixture

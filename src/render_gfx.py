@@ -30,7 +30,7 @@ def moving_average(values: np.ndarray, window: int) -> np.ndarray:
 
 x, y = ts2xy(load_results("log/252_days/SAC"), "timesteps")
 y = moving_average(y, window=1000)
-x = x[-len(y):]
+x = x[-len(y) :]
 zipped = list(zip(x, y))
 DF = pd.DataFrame(zipped, columns=["timesteps", "rewards"])
 DF = DF.set_index("timesteps")

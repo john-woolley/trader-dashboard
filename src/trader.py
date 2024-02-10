@@ -96,6 +96,7 @@ class Trader(gym.Env):
         the reward. Default is 0.9.
     - render_mode (str): The rendering mode for visualization. Default is None.
     """
+
     def __init__(
         self,
         data: pd.DataFrame,
@@ -261,8 +262,7 @@ class Trader(gym.Env):
         long_weights = self.model_portfolio[longs]
         sum_weight_short = np.sum(short_weights)
         sum_weight_long = np.sum(long_weights)
-        scaled[shorts] = scaled[shorts] / \
-            sum_weight_short * self.short_leverage
+        scaled[shorts] = scaled[shorts] / sum_weight_short * self.short_leverage
         scaled[longs] = scaled[longs] / sum_weight_long * self.long_leverage
         return scaled
 
@@ -287,8 +287,7 @@ class Trader(gym.Env):
             self.period = 0
         else:
             self.period = random.randint(0, len(self.dates) - self.ep_length)
-        self.spot = self.data.loc[self.dates[self.period +
-                                             self.current_step], "spot"]
+        self.spot = self.data.loc[self.dates[self.period + self.current_step], "spot"]
         assert isinstance(self.spot, pd.Series)
         self.spot = self.spot.values
         self.balance = self.initial_balance
@@ -311,11 +310,10 @@ class Trader(gym.Env):
         macro_len = len(macro_cols)
         curr_date = self.dates[self.period + self.current_step]
         if self.current_step < 10:
-            prev_dates = self.dates[self.period: self.period +
-                                    self.current_step + 1]
+            prev_dates = self.dates[self.period : self.period + self.current_step + 1]
         else:
             prev_dates = self.dates[
-                self.period + self.current_step - 10: self.period
+                self.period + self.current_step - 10 : self.period
                 + self.current_step
                 + 1
             ]
@@ -325,8 +323,7 @@ class Trader(gym.Env):
         log_spot_window = np.log(spot_window)
         assert isinstance(log_spot_window, pd.DataFrame)
         if self.current_step > 0:
-            spot_returns = log_spot_window.unstack(
-            ).diff().dropna().iloc[-1].values
+            spot_returns = log_spot_window.unstack().diff().dropna().iloc[-1].values
         else:
             spot_returns = np.zeros(self.no_symbols)
         assert isinstance(spot_returns, np.ndarray)
@@ -347,8 +344,7 @@ class Trader(gym.Env):
             slices.append(this_slice)
         stock_state = np.concatenate(slices)
         stock_state = np.concatenate([stock_state, spot_rank, spot_returns])
-        macro_state = np.array([self.data.loc[curr_date, col]
-                               for col in macro_cols])
+        macro_state = np.array([self.data.loc[curr_date, col] for col in macro_cols])
         macro_state = np.concatenate(macro_state)[slice(None, None, macro_len)]
         state = np.concatenate(
             [stock_state, self.net_position_weights, self.model_portfolio]
@@ -481,8 +477,7 @@ class Trader(gym.Env):
             deviations
             / sum_deviation
             * np.min(
-                [sum_deviation, max(
-                    self.balance / self.current_portfolio_value, 0.01)]
+                [sum_deviation, max(self.balance / self.current_portfolio_value, 0.01)]
             )
         )
         for idx, deviation in enumerate(deviations):
@@ -544,10 +539,8 @@ class Trader(gym.Env):
             for i in range(self.no_symbols)
         }
         action_dict = {
-            f"action_{self.symbols[i]}": action[i]
-            for i in range(self.no_symbols)
+            f"action_{self.symbols[i]}": action[i] for i in range(self.no_symbols)
         }
         state_dict = {**state_dict, **net_lev_dict, **action_dict}
         step_df = pd.DataFrame.from_dict(state_dict)
-        self.render_df = pd.concat(
-            [self.render_df, step_df], ignore_index=True)
+        self.render_df = pd.concat([self.render_df, step_df], ignore_index=True)

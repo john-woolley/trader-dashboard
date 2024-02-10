@@ -80,13 +80,13 @@ def upload_csv(request: Request):
     output_path = request.args.get("output")
     parse_dates = bool(int(request.args.get("parse_dates", 0)))
     index_col = request.args.get("index_col")
-    with open(input_path, "r", encoding='utf-8') as f:
+    with open(input_path, "r", encoding="utf-8") as f:
         input_file = f.read()
     if not output_path:
         output_path = input_path.split("/")[-1].split(".")[0]
     file_path = os.path.join(app_path, "data", output_path)
     logger.info("Uploading %s to %s", input_path, file_path)
-    with open(file_path, "w", encoding='utf-8') as f:
+    with open(file_path, "w", encoding="utf-8") as f:
         f.write(input_file)
     logger.info("Uploaded %s to %s", input_path, file_path)
     df = pd.read_csv(file_path, parse_dates=parse_dates, index_col=index_col)
@@ -118,7 +118,8 @@ def start_handler(request: Request):
     timesteps = int(request.args.get("timesteps", 1000))
     logger.info(
         "Starting training with cv_periods=%s and train_start_date=%s",
-        cv_periods, start_date
+        cv_periods,
+        start_date,
     )
     file_path = os.path.join(app_path, "data/master.csv")
     data = CVIngestionPipeline(file_path, cv_periods, start_date=start_date)
@@ -176,7 +177,7 @@ def start_handler(request: Request):
                 #  is not correct
                 obs,  # type: ignore
                 state=lstm_states,
-                episode_start=episode_starts
+                episode_start=episode_starts,
             )
             obs, _, done, _ = vec_env.step(action)
             if done:

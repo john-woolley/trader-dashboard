@@ -24,9 +24,7 @@ For more information, refer to the stable_baselines3 documentation on vectorized
 import multiprocessing as mp
 import warnings
 from collections import OrderedDict
-from typing import (
-    Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
-)
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
 from sanic import Sanic
 import gymnasium as gym
 import numpy as np
@@ -45,8 +43,6 @@ from stable_baselines3.common.vec_env.base_vec_env import (
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 
 
-
-
 def _worker(
     remote: mp.connection.Connection,  # type: ignore[no-untyped-def]
     parent_remote: mp.connection.Connection,  # type: ignore[no-untyped-def]
@@ -62,8 +58,7 @@ def _worker(
         try:
             cmd, data = remote.recv()
             if cmd == "step":
-                observation, reward, terminated, truncated, info = env.step(
-                    data)
+                observation, reward, terminated, truncated, info = env.step(data)
                 # convert to SB3 VecEnv api
                 done = terminated or truncated
                 info["TimeLimit.truncated"] = truncated and not terminated
@@ -74,8 +69,7 @@ def _worker(
                 remote.send((observation, reward, done, info, reset_info))
             elif cmd == "reset":
                 maybe_options = {"options": data[1]} if data[1] else {}
-                observation, reset_info = env.reset(
-                    seed=data[0], **maybe_options)
+                observation, reset_info = env.reset(seed=data[0], **maybe_options)
                 remote.send((observation, reset_info))
             elif cmd == "render":
                 remote.send(env.render())
@@ -96,8 +90,7 @@ def _worker(
             elif cmd == "is_wrapped":
                 remote.send(is_wrapped(env, data))
             else:
-                raise NotImplementedError(
-                    f"`{cmd}` is not implemented in the worker")
+                raise NotImplementedError(f"`{cmd}` is not implemented in the worker")
         except EOFError:
             break
 
@@ -144,13 +137,14 @@ class SanicVecEnv(VecEnv):
         if start_method is None:
             start_method = "spawn"
         ctx = sanic_app.shared_ctx.mp_ctx
-        self.remotes, self.work_remotes = zip(
-            *[ctx.Pipe() for _ in range(n_envs)])
+        self.remotes, self.work_remotes = zip(*[ctx.Pipe() for _ in range(n_envs)])
         self.processes = []
         for work_remote, remote, env_fn in zip(
             self.work_remotes, self.remotes, env_fns
         ):
-            hex_name = md5(str(uniform(0, 1)).encode()).hexdigest()
+            hex_name = md5(
+                str(uniform(0, 1)).encode(), usedforsecurity=False
+            ).hexdigest()
             worker_name = f"RLVecEnv{hex_name[:10]}"
             kwargs = {
                 "remote": work_remote,
@@ -178,8 +172,7 @@ class SanicVecEnv(VecEnv):
     def step_wait(self) -> VecEnvStepReturn:
         results = [remote.recv() for remote in self.remotes]
         self.waiting = False
-        obs, rews, dones, infos, self.reset_infos = zip(
-            *results)  # type: ignore[assignment]
+        obs, rews, dones, infos, self.reset_infos = zip(*results)  # type: ignore[assignment]
         # type: ignore[return-value]
         return (
             _flatten_obs(obs, self.observation_space),
@@ -190,8 +183,7 @@ class SanicVecEnv(VecEnv):
 
     def reset(self) -> VecEnvObs:
         for env_idx, remote in enumerate(self.remotes):
-            remote.send(
-                ("reset", (self._seeds[env_idx], self._options[env_idx])))
+            remote.send(("reset", (self._seeds[env_idx], self._options[env_idx])))
         results = [remote.recv() for remote in self.remotes]
         obs, self.reset_infos = zip(*results)  # type: ignore[assignment]
         # Seeds and options are only used once
@@ -213,10 +205,12 @@ class SanicVecEnv(VecEnv):
 
     def get_images(self) -> Sequence[Optional[np.ndarray]]:
         if self.render_mode != "rgb_array":
-            warnings.warn((
-                f"The render mode is {self.render_mode}"
-                "but this method assumes it is `rgb_array` to obtain images."
-            ))
+            warnings.warn(
+                (
+                    f"The render mode is {self.render_mode}"
+                    "but this method assumes it is `rgb_array` to obtain images."
+                )
+            )
             return [None for _ in self.remotes]
         for pipe in self.remotes:
             # gather render return from subprocesses
@@ -224,9 +218,7 @@ class SanicVecEnv(VecEnv):
         outputs = [pipe.recv() for pipe in self.remotes]
         return outputs
 
-    def get_attr(
-            self, attr_name: str, indices: VecEnvIndices = None
-    ) -> List[Any]:
+    def get_attr(self, attr_name: str, indices: VecEnvIndices = None) -> List[Any]:
         """Return attribute from vectorized environment (see base class)."""
         target_remotes = self._get_target_remotes(indices)
         for remote in target_remotes:
@@ -253,8 +245,7 @@ class SanicVecEnv(VecEnv):
         """Call instance methods of vectorized environments."""
         target_remotes = self._get_target_remotes(indices)
         for remote in target_remotes:
-            remote.send(
-                ("env_method", (method_name, method_args, method_kwargs)))
+            remote.send(("env_method", (method_name, method_args, method_kwargs)))
         return [remote.recv() for remote in target_remotes]
 
     def env_is_wrapped(
@@ -306,8 +297,10 @@ def _flatten_obs(
             obs[0], dict
         ), "non-dict observation for environment with Dict observation space"
         return OrderedDict(
-            [(k, np.stack([o[k] for o in obs]))  # type: ignore[index]
-             for k in space.spaces.keys()]
+            [
+                (k, np.stack([o[k] for o in obs]))  # type: ignore[index]
+                for k in space.spaces.keys()
+            ]
         )
     elif isinstance(space, spaces.Tuple):
         assert isinstance(
@@ -315,7 +308,9 @@ def _flatten_obs(
         ), "non-tuple observation for environment with Tuple observation space"
         obs_len = len(space.spaces)
         # type: ignore[index]
-        return tuple(np.stack([o[i] for o in obs])  # type: ignore[index]
-                     for i in range(obs_len))
+        return tuple(
+            np.stack([o[i] for o in obs])  # type: ignore[index]
+            for i in range(obs_len)
+        )
     else:
         return np.stack(obs)  # type: ignore[arg-type]

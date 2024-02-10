@@ -2,20 +2,19 @@ import pytest
 from stable_baselines3.common.vec_env import DummyVecEnv
 from sanic import Request
 from src.sanic_vec_env import SanicVecEnv
-from sanic.worker.multiplexer import WorkerMultiplexer
-from sanic.worker.manager import WorkerManager
 from unittest.mock import Mock
 import multiprocessing as mp
 from src.db import add_job
 
-#TODO: Fix this test
+
+# TODO: Fix this test
 @pytest.fixture
 def mock_request():
     request = Mock()
     request.app = Mock()
     server_info = Mock()
     manager = Mock()
-    manager.durables = {'ident': "trader"}
+    manager.durables = {"ident": "trader"}
     request.app.state.workers = 1
     request.app.listeners = {"main_process_ready": []}
     request.app.get_motd_data.return_value = ({"packages": ""}, {})

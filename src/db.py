@@ -106,9 +106,7 @@ def create_workers_table():
         metadata,
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
         sa.Column(
-            "job_id", sa.Integer, sa.ForeignKey(
-                jobs_table.c.id, ondelete="CASCADE"
-                )
+            "job_id", sa.Integer, sa.ForeignKey(jobs_table.c.id, ondelete="CASCADE")
         ),
         sa.Column("name", sa.String),
         sa.Column("status", sa.String),
@@ -137,9 +135,7 @@ def get_workers_by_name(job_name: str) -> str:
     worker_query = (
         sa.select(workers_table.c.name)
         .select_from(
-            workers_table.join(
-                jobs_table, jobs_table.c.id == workers_table.c.job_id
-                )
+            workers_table.join(jobs_table, jobs_table.c.id == workers_table.c.job_id)
         )
         .where(jobs_table.c.name == job_name)
     )
@@ -169,9 +165,7 @@ def get_workers_by_id(job_id: int) -> str:
     worker_query = (
         sa.select(workers_table.c.name)
         .select_from(
-            workers_table.join(
-                jobs_table, jobs_table.c.id == workers_table.c.job_id
-                )
+            workers_table.join(jobs_table, jobs_table.c.id == workers_table.c.job_id)
         )
         .where(jobs_table.c.id == job_id)
     )
@@ -223,9 +217,7 @@ def add_worker(worker_name: str, jobname: str) -> None:
     assert fetched is not None, f"Job {jobname} not found"
     job_id = fetched[0]
     worker_table = sa.Table("workers", metadata)
-    ins = worker_table.insert().values(
-        name=worker_name, status="idle", job_id=job_id
-        )
+    ins = worker_table.insert().values(name=worker_name, status="idle", job_id=job_id)
     conn.execute(ins)
     conn.commit()
     conn.close()
@@ -380,18 +372,18 @@ def chunk_df(df: pd.DataFrame, chunk_size: int) -> list:
     Returns:
         list: A list of DataFrame chunks.
     """
-    chunks = [df[i: i + chunk_size] for i in range(0, len(df), chunk_size)]
+    chunks = [df[i : i + chunk_size] for i in range(0, len(df), chunk_size)]
     return chunks
 
 
 def chunk_raw_table(table_name: str, chunk_size: int) -> list:
     """
     Chunk the raw table data into smaller chunks and insert them into the database table.
-    
+
     Args:
         table_name (str): The name of the database table.
         chunk_size (int): The size of each chunk.
-    
+
     Returns:
         list: The list of chunks.
     """

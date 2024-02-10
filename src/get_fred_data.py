@@ -49,6 +49,7 @@ def get_series(series_name: str, pct_chg=False, pct_chg_freq=1):
         return calc_pct_chg(series, freq=pct_chg_freq)
     return series
 
+
 class DataSet:
     """
     A class representing a dataset.
@@ -96,10 +97,8 @@ class DataSet:
         Returns:
             pd.DataFrame: The release dates of the dataset.
         """
-        release_dates = pf.get_release_dates(
-            release_id=self.rid, api_key=API_KEY)
-        release_df = pd.DataFrame(
-            release_dates["release_dates"]).set_index("date")
+        release_dates = pf.get_release_dates(release_id=self.rid, api_key=API_KEY)
+        release_df = pd.DataFrame(release_dates["release_dates"]).set_index("date")
         return release_df
 
     def get_release_offsets(self):
@@ -132,8 +131,7 @@ class DataCollection:
         self.data = self.merge_datasets()
         self.min_date = self.data.index.min()
         self.max_date = self.data.index.max()
-        self.daterange = pd.date_range(
-            start=self.min_date, end=self.max_date, freq="D")
+        self.daterange = pd.date_range(start=self.min_date, end=self.max_date, freq="D")
         self.data = self.data.groupby(level=0).first()
         self.data = self.data.reindex(self.daterange, fill_value=np.nan)
         self.data = self.data.ffill()
@@ -149,8 +147,7 @@ class DataCollection:
         merged = self.datasets[0].data
         for dataset in self.datasets[1:]:
             merged = pd.merge(
-                merged, dataset.data, left_index=True, right_index=True,
-                how="outer"
+                merged, dataset.data, left_index=True, right_index=True, how="outer"
             )
         return merged
 
@@ -204,13 +201,14 @@ class DefinedDataSet:
 class CPIData(DefinedDataSet):
     """
     Represents a dataset for Consumer Price Index (CPI) data.
-    
+
     Attributes:
         rid (int): The ID of the dataset.
         date_file_offset (int): The offset of the date file.
         series (list): A list of series names.
         pct_chg (bool): Indicates whether the data represents percentage change.
     """
+
     rid = 10
     date_file_offset = 40
     series = ["CPILFESL", "CPIENGSL"]
@@ -249,6 +247,7 @@ class CONSTRData(DefinedDataSet):
         pct_chg (bool): Indicates whether the data should be percentage change
         or not.
     """
+
     rid = 229
     data_file_offset = 40
     series = ["TTLCONS"]
@@ -265,6 +264,7 @@ class JOLTSData(DefinedDataSet):
         series (list): A list of series codes for JOLTS data.
         pct_chg (bool): Indicates whether percentage change is enabled or not.
     """
+
     rid = 192
     date_file_offset = 41
     series = ["JTSJOR", "JTSLDR", "JTSQUR", "JTSHIR"]
@@ -274,7 +274,7 @@ class JOLTSData(DefinedDataSet):
 class GDPData(DefinedDataSet):
     """
     Represents a dataset for GDP data.
-    
+
     Attributes:
         rid (int): The ID of the dataset.
         date_file_offset (int): The offset in days for the date file.
@@ -323,6 +323,7 @@ class MANUData(DefinedDataSet):
     series = ["ISRATIO"]
     pct_chg = True
 
+
 if __name__ == "__main__":
     data_list = [CPIData, CONSTRData, JOLTSData, GDPData, EMPLData, MANUData]
     data_collection = DataCollection(data_list)
@@ -357,12 +358,10 @@ if __name__ == "__main__":
 
     market_df = cmt_10y.to_frame()
     for s in market_data:
-        market_df = market_df.merge(
-            s, how="outer", left_index=True, right_index=True)
+        market_df = market_df.merge(s, how="outer", left_index=True, right_index=True)
     print(market_df)
 
     master_df = pd.merge(
-        data_collection.data, market_df, how="outer",
-        left_index=True, right_index=True
+        data_collection.data, market_df, how="outer", left_index=True, right_index=True
     ).ffill()
     master_df.to_csv("data/macro.csv")

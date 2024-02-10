@@ -2,3 +2,6 @@
 *.npz
 *.zip
 venv/
+.tox/
+src/UNKNOWN.egg-info/
+src/__pycache__/
