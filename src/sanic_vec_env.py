@@ -21,9 +21,11 @@ from stable_baselines3.common.vec_env.base_vec_env import (
 )
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 
+
 def getconn():
     c = psycopg2.connect(user="trader_dashboard", host="0.0.0.0", dbname="trader_dashboard")
     return c
+
 
 def _worker(
     remote: mp.connection.Connection,
@@ -127,8 +129,6 @@ class SanicVecEnv(VecEnv):
             kwargs = {'remote': work_remote, 'parent_remote': remote,
                       'env_fn_wrapper': CloudpickleWrapper(env_fn)}
             sanic_app.m.manage(ident=worker_name, func=_worker, kwargs=kwargs, workers=1, restartable=True)
-            logger.info(f"Queued worker {worker_name}")
-
             insert_stmt = sa.insert(sa.Table('workers', self.metadata))
             insert_stmt = insert_stmt.values(name=worker_name, status='queued')
             self.db_conn.execute(insert_stmt)
