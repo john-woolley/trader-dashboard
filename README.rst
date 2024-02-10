@@ -25,7 +25,8 @@ Introduction
 ------------
 This project aims to create a dashboard for reinforcement learning in trading using Sanic and ReactPy. It provides a user-friendly interface for training, monitoring and analyzing trading strategies.
 
-## Features
+Features
+--------
 - Real-time data visualization
 - Interactive charts
 - Performance metrics tracking
@@ -36,24 +37,24 @@ Installation
 To install and run the dashboard, follow these steps:
 
 1. Clone the repository:
-    ```
+    ``
     git clone https://github.com/john-woolley/trader-dashboard.git
-    ```
+    ``
 
 2. Install the required dependencies:
-    ```
+    ``
     pip install -r requirements.txt
-    ```
+    ``
 
 3. Start the Sanic server:
-    ```
+    ``
     python app.py
-    ```
+    ``
 
 4. Open the dashboard in your web browser:
-    ```
+    ``
     http://localhost:8000
-    ```
+    ``
 
 Usage
 -----
