@@ -44,33 +44,7 @@ from stable_baselines3.common.vec_env.base_vec_env import (
 )
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 
-# Rest of the code...
-"""
 
-"""
-
-import multiprocessing as mp
-import warnings
-from collections import OrderedDict
-from typing import (
-    Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
-)
-from sanic import Sanic
-import gymnasium as gym
-import numpy as np
-from gymnasium import spaces
-from hashlib import md5
-from random import uniform
-from src.db import add_worker
-
-from stable_baselines3.common.vec_env.base_vec_env import (
-    CloudpickleWrapper,
-    VecEnv,
-    VecEnvIndices,
-    VecEnvObs,
-    VecEnvStepReturn,
-)
-from stable_baselines3.common.vec_env.patch_gym import _patch_env
 
 
 def _worker(
