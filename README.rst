@@ -29,7 +29,7 @@ Reinforcement Learning Dashboard with Sanic and ReactPy
 Introduction
 ************
 
-This project aims to create a dashboard for reinforcement learning in trading using Sanic and ReactPy. It provides a user^friendly interface for training, monitoring and analyzing trading strategies.
+This project aims to create a dashboard for reinforcement learning in trading using Sanic and ReactPy. It provides a user-friendly interface for training, monitoring and analyzing trading strategies.
 
 ********
 Features
