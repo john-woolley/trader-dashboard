@@ -1,5 +1,6 @@
+#############################
 trader-dashboard
-=============================
+#############################
 
 .. start-badges
 
@@ -19,45 +20,68 @@ trader-dashboard
 
 .. end-badges
 
+=======================================================
 Reinforcement Learning Dashboard with Sanic and ReactPy
+=======================================================
 
+
+************
 Introduction
-------------
-This project aims to create a dashboard for reinforcement learning in trading using Sanic and ReactPy. It provides a user-friendly interface for training, monitoring and analyzing trading strategies.
+************
 
+This project aims to create a dashboard for reinforcement learning in trading using Sanic and ReactPy. It provides a user^friendly interface for training, monitoring and analyzing trading strategies.
+
+********
 Features
---------
+********
+
 - Real-time data visualization
 - Interactive charts
 - Performance metrics tracking
 - Strategy comparison
 
+************
 Installation
-------------
-To install and run the dashboard, follow these steps:
+************
 
-1. Clone the repository:
-    ``
+To install and run the dashboard, follow these steps.
+
+^^^^^^^^^^^^^^^^^^^^^^^
+1. Clone the repository
+^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code:: bash
+
     git clone https://github.com/john-woolley/trader-dashboard.git
-    ``
 
-2. Install the required dependencies:
-    ``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2. Install the required dependencies
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code:: bash
+
     pip install -r requirements.txt
-    ``
 
-3. Start the Sanic server:
-    ``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+3. Start the Sanic server
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code:: bash
+
     python app.py
-    ``
 
-4. Open the dashboard in your web browser:
-    ``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+4. Open the dashboard in your web browser
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code::
+
     http://localhost:8000
-    ``
 
+******
 Usage
------
+******
+
 Once the dashboard is up and running, you can perform the following actions:
 
 - Define a reinforcement model based on your own provided market data and free data APIs
