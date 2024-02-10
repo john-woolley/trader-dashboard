@@ -1,7 +1,7 @@
 """
 This module provides functions and classes for retrieving and processing data from the FRED API.
 """
-from typing import Union
+from typing import Union, List, Callable
 
 import numpy as np
 import pandas as pd
@@ -62,7 +62,7 @@ class DataSet:
     """
 
     def __init__(
-        self, rid: int, series: list[str], pct_chg: Union[bool, list[bool]] = False
+        self, rid: int, series: List[str], pct_chg: Union[bool, List[bool]] = False
     ):
         self.rid = rid
         self.series = series
@@ -114,6 +114,7 @@ class DataSet:
             self.data.loc[date, "release_date"] = pred
         self.data.set_index("release_date", inplace=True)
 
+
 class DataCollection:
     """
     A class representing a collection of datasets.
@@ -126,7 +127,7 @@ class DataCollection:
         daterange (pd.DatetimeIndex): The date range of the data.
     """
 
-    def __init__(self, datasets: list[callable]):
+    def __init__(self, datasets: List[Callable]):
         self.datasets = [dataset().get() for dataset in datasets]
         self.data = self.merge_datasets()
         self.min_date = self.data.index.min()

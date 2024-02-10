@@ -1,3 +1,54 @@
+"""
+This module provides a multiprocess vectorized wrapper for multiple environments using Sanic framework.
+It creates a separate process for each environment, allowing for parallel execution and significant speedup.
+The SanicVecEnv class is a subclass of the VecEnv class from the stable_baselines3 library.
+
+Example usage:
+    env_fns = [create_env_fn() for _ in range(num_envs)]
+    app = Sanic(__name__)
+    vec_env = SanicVecEnv(env_fns, app, jobname="trader")
+    obs = vec_env.reset()
+    for _ in range(num_steps):
+        actions = model.predict(obs)
+        obs, rewards, dones, infos = vec_env.step(actions)
+        # Perform other operations with the observations, rewards, dones, and infos
+
+Note:
+    - The number of environments should not exceed the number of logical cores on your CPU for optimal performance.
+    - Only 'forkserver' and 'spawn' start methods are thread-safe, which is important when using non thread-safe libraries.
+      Make sure to wrap the code in an `if __name__ == "__main__":` block when using these start methods.
+
+For more information, refer to the stable_baselines3 documentation on vectorized environments.
+"""
+
+import multiprocessing as mp
+import warnings
+from collections import OrderedDict
+from typing import (
+    Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
+)
+from sanic import Sanic
+import gymnasium as gym
+import numpy as np
+from gymnasium import spaces
+from hashlib import md5
+from random import uniform
+from src.db import add_worker
+
+from stable_baselines3.common.vec_env.base_vec_env import (
+    CloudpickleWrapper,
+    VecEnv,
+    VecEnvIndices,
+    VecEnvObs,
+    VecEnvStepReturn,
+)
+from stable_baselines3.common.vec_env.patch_gym import _patch_env
+
+# Rest of the code...
+"""
+
+"""
+
 import multiprocessing as mp
 import warnings
 from collections import OrderedDict

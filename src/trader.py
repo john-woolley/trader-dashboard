@@ -546,7 +546,6 @@ class Trader(gym.Env):
         action_dict = {
             f"action_{self.symbols[i]}": action[i]
             for i in range(self.no_symbols)
-        
         }
         state_dict = {**state_dict, **net_lev_dict, **action_dict}
         step_df = pd.DataFrame.from_dict(state_dict)
