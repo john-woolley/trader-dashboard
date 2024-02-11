@@ -11,4 +11,4 @@ ruff
 coverage
 tox
 pylint
-torch==1.13.1
+torch
