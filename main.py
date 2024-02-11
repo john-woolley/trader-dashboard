@@ -218,7 +218,7 @@ def start_handler(request: Request):
         cv_periods,
         start_date,
     )
-    for i in range(0, cv_periods):
+    for i in range(0, cv_periods - 1):
         logger.info("Training on fold %i of %i", i, cv_periods)
         env_fn = partial(Trader, table_name, i, test=True, render_mode=render_mode)
         request.app.shared_ctx.hallpass.acquire()
@@ -251,7 +251,7 @@ def start_handler(request: Request):
         )
         model_train.learn(total_timesteps=timesteps)
         model_train.save(f"model_{i}")
-        env_test = Trader(table_name, i+1, test=True)
+        env_test = Trader(table_name, i+1, test=True, render_mode=render_mode)
         model_handle = f"model_{i}"
         model_test = model.load(model_handle, env=env_test)
         vec_env = model_test.get_env()
