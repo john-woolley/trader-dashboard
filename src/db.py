@@ -361,7 +361,6 @@ def get_raw_table(table_name: str) -> pd.DataFrame:
     return df
 
 
-
 def chunk_df_by_number(df: pd.DataFrame, no_chunks: int) -> list:
     """
     Splits a DataFrame into a specified number of chunks.
@@ -375,10 +374,7 @@ def chunk_df_by_number(df: pd.DataFrame, no_chunks: int) -> list:
     """
     df = df.set_index(["date", "ticker"])
     chunk_size = len(df.index.get_level_values("date").unique()) // no_chunks
-    chunks = [
-        df.iloc[i * chunk_size : (i + 1) * chunk_size]
-        for i in range(no_chunks)
-    ]
+    chunks = [df.iloc[i * chunk_size : (i + 1) * chunk_size] for i in range(no_chunks)]
     return chunks
 
 
@@ -406,7 +402,10 @@ def chunk_df_by_size(df: pd.DataFrame, chunk_size: int) -> list:
     ]
     return chunks
 
-def chunk_raw_table(table_name: str, chunk_size: int = 1000, no_chunks: int = 0) -> list:
+
+def chunk_raw_table(
+    table_name: str, chunk_size: int = 1000, no_chunks: int = 0
+) -> list:
     """
     Chunk the raw table data into smaller chunks and insert them into the
     database table.
@@ -507,11 +506,8 @@ def get_job_worker_mapping():
     metadata.reflect(bind=conn)
     jobs_table = sa.Table("jobs", metadata, autoload_with=conn)
     workers_table = sa.Table("workers", metadata, autoload_with=conn)
-    query = (
-        sa.select(jobs_table.c.name, workers_table.c.name)
-        .select_from(
-            workers_table.join(jobs_table, jobs_table.c.id == workers_table.c.job_id)
-        )
+    query = sa.select(jobs_table.c.name, workers_table.c.name).select_from(
+        workers_table.join(jobs_table, jobs_table.c.id == workers_table.c.job_id)
     )
     res = conn.execute(query).fetchall()
     mapping = {}
@@ -522,6 +518,7 @@ def get_job_worker_mapping():
             mapping[job].append(worker)
     conn.close()
     return mapping
+
 
 def get_cv_no_chunks(table_name: str):
     """
@@ -542,6 +539,7 @@ def get_cv_no_chunks(table_name: str):
     conn.close()
     return len(res)
 
+
 if __name__ == "__main__":
     drop_workers_table()
     drop_jobs_table()
@@ -554,7 +552,9 @@ if __name__ == "__main__":
     add_worker("worker2", "test")
     print(get_workers_by_name("test"))
     print(get_workers_by_id(1))
-    test_df = pd.read_csv("trader-dashboard/data/master.csv", parse_dates=True).iloc[:, 1:]
+    test_df = pd.read_csv("trader-dashboard/data/master.csv", parse_dates=True).iloc[
+        :, 1:
+    ]
     insert_raw_table(test_df, "test_table")
     print(get_raw_table("test_table"))
     chunk_raw_table("test_table", 240)

@@ -132,10 +132,8 @@ class Trader(gym.Env):
         self.render_mode = render_mode
         self.risk_aversion = risk_aversion
         self.data = db.read_chunked_table(table_name, chunk)
-        self.data['spot'] = self.data['closeadj']
-        self.data['capexratio'] = (
-            self.data['capex'] / self.data['equity']
-            ).fillna(0)
+        self.data["spot"] = self.data["closeadj"]
+        self.data["capexratio"] = (self.data["capex"] / self.data["equity"]).fillna(0)
         self.data = self.data.ffill()
         self.dates = np.array(self.data.index.get_level_values(0).unique())
         self.symbols = np.array(self.data.index.get_level_values(1).unique())
@@ -326,33 +324,19 @@ class Trader(gym.Env):
             prev_dates = self.dates[p + s - 10 : p + s + 1]
         spot = self.data.loc[curr_date, "spot"]
         spot_window = self.data.loc[prev_dates, "spot"].to_frame()
-        assert isinstance(spot_window, pd.DataFrame)
         log_spot_window = np.log(spot_window)
-        assert np.all(~np.isnan(log_spot_window)), "log_spot_window contains NaN values"
-        assert isinstance(log_spot_window, pd.DataFrame)
         if self.current_step > 0:
             spot_returns = log_spot_window.unstack().diff().dropna().iloc[-1]
             spot_returns = spot_returns.values
         else:
             spot_returns = np.zeros(self.no_symbols)
-        assert isinstance(spot_returns, np.ndarray)
-        assert np.all(~np.isnan(spot_returns)), "spot_returns contains NaN values"
-        assert isinstance(spot, pd.Series)
         spot_window_vals = spot_window.values
         spot_values = spot.values
-        assert isinstance(spot_window_vals, np.ndarray)
-        assert isinstance(spot_values, np.ndarray)
         spot_rank = get_percentile(spot_values, spot_window_vals, axis=0)
-        assert isinstance(spot, pd.Series)
         self.spot = spot.values
-        assert isinstance(self.data, pd.DataFrame)
-        slices = []
-        for col in used_cols:
-            this_slice = self.data.loc[curr_date, col]
-            assert isinstance(this_slice, pd.Series)
-            this_slice = this_slice.reindex(self.symbols, fill_value=0).values
-            slices.append(this_slice)
-        stock_state = np.concatenate(slices)
+        slices = self.data.loc[curr_date, used_cols]
+        slices = slices.reindex(self.symbols, fill_value=0)
+        stock_state = np.concatenate(slices.values)
         stock_state = np.concatenate([stock_state, spot_rank, spot_returns])
         macro_state = self.data.loc[curr_date, macro_cols].values
         macro_state = np.concatenate(macro_state)[slice(None, None, macro_len)]

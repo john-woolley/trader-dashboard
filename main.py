@@ -28,7 +28,7 @@ from src.trader import Trader
 
 CONN = "postgresql+psycopg2://trader_dashboard@0.0.0.0:5432/trader_dashboard"
 main_app = Sanic(__name__)
-main_app.config['RESPONSE_TIMEOUT'] = 3600
+main_app.config["RESPONSE_TIMEOUT"] = 3600
 app_path = os.path.dirname(__file__)
 main_app.static("/static", os.path.join(app_path, "static"))
 log_dir = os.path.join(app_path, "log")
@@ -124,6 +124,7 @@ def get_workers(request: Request):
     workers = db.get_workers()
     return json({"workers": workers})
 
+
 @main_app.get("/get_test_render")
 def get_test_render(request: Request):
     """
@@ -138,6 +139,7 @@ def get_test_render(request: Request):
     jobname = request.args.get("jobname", "default")
     test_render = db.get_test_render(jobname)
     return json({"test_render": test_render})
+
 
 @main_app.get("/get_model")
 def get_model(request: Request):
@@ -170,6 +172,7 @@ def get_log(request: Request):
     log = db.get_log(jobname)
     return json({"log": log})
 
+
 @main_app.get("/prepare_data")
 def prepare_data(request: Request):
     """
@@ -190,6 +193,7 @@ def prepare_data(request: Request):
     else:
         db.create_chunked_table(table_name, no_chunks=no_chunks)
     return json({"status": "success"})
+
 
 @main_app.get("/start")
 def start_handler(request: Request):
@@ -251,7 +255,7 @@ def start_handler(request: Request):
         )
         model_train.learn(total_timesteps=timesteps)
         model_train.save(f"model_{i}")
-        env_test = Trader(table_name, i+1, test=True, render_mode=render_mode)
+        env_test = Trader(table_name, i + 1, test=True, render_mode=render_mode)
         model_handle = f"model_{i}"
         model_test = model.load(model_handle, env=env_test)
         vec_env = model_test.get_env()

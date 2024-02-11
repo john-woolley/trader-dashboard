@@ -10,7 +10,6 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, DummyVec
 
 
 if __name__ == "__main__":
-
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
     log_dir = "logs"
@@ -72,7 +71,7 @@ if __name__ == "__main__":
         )
         model_train.learn(total_timesteps=timesteps, progress_bar=True)
         model_train.save(f"model_{i}")
-        env_test = Trader(table_name, i+1, test=True, render_mode=render_mode)
+        env_test = Trader(table_name, i + 1, test=True, render_mode=render_mode)
         model_handle = f"model_{i}"
         model_test = SAC.load(model_handle, env=env_test)
         vec_env = model_test.get_env()
