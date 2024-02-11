@@ -25,10 +25,10 @@ from sanic import Request, json, Sanic
 from src import db
 from src.sanic_vec_env import SanicVecEnv
 from src.trader import Trader
-from src.ingestion import CVIngestionPipeline
 
 CONN = "postgresql+psycopg2://trader_dashboard@0.0.0.0:5432/trader_dashboard"
 main_app = Sanic(__name__)
+main_app.config['RESPONSE_TIMEOUT'] = 3600
 app_path = os.path.dirname(__file__)
 main_app.static("/static", os.path.join(app_path, "static"))
 log_dir = os.path.join(app_path, "log")
@@ -95,6 +95,102 @@ def upload_csv(request: Request):
     return json({"status": "success"})
 
 
+@main_app.get("/get_jobs")
+def get_jobs(request: Request):
+    """
+    Get all jobs from the database.
+
+    Args:
+        request (Request): The request object.
+
+    Returns:
+        dict: A dictionary containing the jobs.
+    """
+    jobs = db.get_jobs()
+    return json({"jobs": jobs})
+
+
+@main_app.get("/get_workers")
+def get_workers(request: Request):
+    """
+    Get all workers from the database.
+
+    Args:
+        request (Request): The request object.
+
+    Returns:
+        dict: A dictionary containing the workers.
+    """
+    workers = db.get_workers()
+    return json({"workers": workers})
+
+@main_app.get("/get_test_render")
+def get_test_render(request: Request):
+    """
+    Get the test render file for a specific job.
+
+    Args:
+        request (Request): The request object.
+
+    Returns:
+        dict: A dictionary containing the test render file.
+    """
+    jobname = request.args.get("jobname", "default")
+    test_render = db.get_test_render(jobname)
+    return json({"test_render": test_render})
+
+@main_app.get("/get_model")
+def get_model(request: Request):
+    """
+    Get the model file for a specific job.
+
+    Args:
+        request (Request): The request object.
+
+    Returns:
+        dict: A dictionary containing the model file.
+    """
+    jobname = request.args.get("jobname", "default")
+    model = db.get_model(jobname)
+    return json({"model": model})
+
+
+@main_app.get("/get_log")
+def get_log(request: Request):
+    """
+    Get the log file for a specific job.
+
+    Args:
+        request (Request): The request object.
+
+    Returns:
+        dict: A dictionary containing the log file.
+    """
+    jobname = request.args.get("jobname", "default")
+    log = db.get_log(jobname)
+    return json({"log": log})
+
+@main_app.get("/prepare_data")
+def prepare_data(request: Request):
+    """
+    Prepare the data for training.
+
+    Args:
+        request (Request): The request object.
+
+    Returns:
+        dict: A dictionary indicating the status of the operation.
+    """
+    logger.info("Preparing data")
+    table_name = request.args.get("table_name")
+    no_chunks = int(request.args.get("no_chunks", 0))
+    chunk_size = int(request.args.get("chunk_size", 1000))
+    if not no_chunks:
+        db.create_chunked_table(table_name, chunk_size=chunk_size)
+    else:
+        db.create_chunked_table(table_name, no_chunks=no_chunks)
+    return json({"status": "success"})
+
 @main_app.get("/start")
 def start_handler(request: Request):
     """
@@ -109,25 +205,22 @@ def start_handler(request: Request):
     """
 
     logger.info("Starting training")
-    cv_periods = int(request.args.get("cv_periods", 1))
+    table_name = request.args.get("table_name")
     start_date = request.args.get("train_start_date")
     ncpu = int(request.args.get("ncpu", 1))
     jobname = request.args.get("jobname", "default")
     render_mode = request.args.get("render_mode", "none")
     db.add_job(jobname)
     timesteps = int(request.args.get("timesteps", 1000))
+    cv_periods = db.get_cv_no_chunks(table_name)
     logger.info(
         "Starting training with cv_periods=%s and train_start_date=%s",
         cv_periods,
         start_date,
     )
-    file_path = os.path.join(app_path, "data/master.csv")
-    data = CVIngestionPipeline(file_path, cv_periods, start_date=start_date)
-    for i in range(0, len(data)):
-        logger.info("Training on fold %i of %i", i, len(data))
-        train, test = tuple(*iter(data))
-
-        env_fn = partial(Trader, train, test=True, render_mode=render_mode)
+    for i in range(0, cv_periods):
+        logger.info("Training on fold %i of %i", i, cv_periods)
+        env_fn = partial(Trader, table_name, i, test=True, render_mode=render_mode)
         request.app.shared_ctx.hallpass.acquire()
         logger.info("Acquired hallpass")
         try:
@@ -158,7 +251,7 @@ def start_handler(request: Request):
         )
         model_train.learn(total_timesteps=timesteps)
         model_train.save(f"model_{i}")
-        env_test = Trader(test, test=True)
+        env_test = Trader(table_name, i+1, test=True)
         model_handle = f"model_{i}"
         model_test = model.load(model_handle, env=env_test)
         vec_env = model_test.get_env()
@@ -171,7 +264,7 @@ def start_handler(request: Request):
         lstm_states = None
         num_envs = 1
         episode_starts = np.ones((num_envs,), dtype=bool)
-        for _ in range(len(test["close"]) - 1):
+        while True:
             action, lstm_states = model_test.predict(
                 #  We ignore the type error here because the type hint for obs
                 #  is not correct
@@ -244,4 +337,4 @@ def react_app():
 configure(main_app, react_app)
 
 if __name__ == "__main__":
-    main_app.run(host="192.168.0.110", port=8000, debug=True, workers=16)
+    main_app.run(host="0.0.0.0", port=8000, debug=True, workers=16)

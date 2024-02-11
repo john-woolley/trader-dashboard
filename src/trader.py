@@ -57,6 +57,8 @@ from sanic.log import logger
 
 from src.ingestion import macro_cols, used_cols
 
+from src import db
+
 
 def get_percentile(val, m, axis=0):
     """
@@ -99,7 +101,8 @@ class Trader(gym.Env):
 
     def __init__(
         self,
-        data: pd.DataFrame,
+        table_name: str,
+        chunk: int,
         initial_balance: float = 1e5,
         n_lags=10,
         transaction_cost=0.0025,
@@ -128,7 +131,9 @@ class Trader(gym.Env):
         super().__init__()
         self.render_mode = render_mode
         self.risk_aversion = risk_aversion
-        self.data = data
+        self.data = db.read_chunked_table(table_name, chunk)
+        self.data['spot'] = self.data['closeadj']
+        self.data['capexratio'] = self.data['capex'] / self.data['equity']
         self.dates = np.array(self.data.index.get_level_values(0).unique())
         self.symbols = np.array(self.data.index.get_level_values(1).unique())
         self.no_symbols = len(self.symbols)

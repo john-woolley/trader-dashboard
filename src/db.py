@@ -361,7 +361,28 @@ def get_raw_table(table_name: str) -> pd.DataFrame:
     return df
 
 
-def chunk_df(df: pd.DataFrame, chunk_size: int) -> list:
+
+def chunk_df_by_number(df: pd.DataFrame, no_chunks: int) -> list:
+    """
+    Splits a DataFrame into a specified number of chunks.
+
+    Args:
+        df (pd.DataFrame): The DataFrame to be split.
+        no_chunks (int): The number of chunks.
+
+    Returns:
+        list: A list of DataFrame chunks.
+    """
+    df = df.set_index(["date", "ticker"])
+    chunk_size = len(df.index.get_level_values("date").unique()) // no_chunks
+    chunks = [
+        df.iloc[i * chunk_size : (i + 1) * chunk_size]
+        for i in range(no_chunks)
+    ]
+    return chunks
+
+
+def chunk_df_by_size(df: pd.DataFrame, chunk_size: int) -> list:
     """
     Splits a DataFrame into chunks of a specified size.
 
@@ -372,11 +393,20 @@ def chunk_df(df: pd.DataFrame, chunk_size: int) -> list:
     Returns:
         list: A list of DataFrame chunks.
     """
-    chunks = [df[i : i + chunk_size] for i in range(0, len(df), chunk_size)]
+    df = df.set_index(["date", "ticker"])
+    total_rows = len(df.index.get_level_values("date").unique())
+    num_chunks = total_rows // chunk_size
+    chunks = [
+        df.loc[
+            df.index.get_level_values("date").unique()[
+                i * chunk_size : (i + 1) * chunk_size
+            ]
+        ]
+        for i in range(num_chunks)
+    ]
     return chunks
 
-
-def chunk_raw_table(table_name: str, chunk_size: int) -> list:
+def chunk_raw_table(table_name: str, chunk_size: int = 1000, no_chunks: int = 0) -> list:
     """
     Chunk the raw table data into smaller chunks and insert them into the
     database table.
@@ -389,7 +419,10 @@ def chunk_raw_table(table_name: str, chunk_size: int) -> list:
         list: The list of chunks.
     """
     df = get_raw_table(table_name)
-    chunks = chunk_df(df, chunk_size)
+    if not no_chunks:
+        chunks = chunk_df_by_size(df, chunk_size)
+    else:
+        chunks = chunk_df_by_number(df, no_chunks)
     insert_chunked_table(chunks, table_name)
     return chunks
 
@@ -426,6 +459,89 @@ def read_chunked_table(table_name: str, i: int) -> pd.DataFrame:
     return df
 
 
+def get_workers():
+    """
+    Get all workers from the database.
+
+    Returns:
+        list: A list of workers.
+    """
+    conn = sa.create_engine(CONN).connect()
+    metadata = sa.MetaData()
+    metadata.reflect(bind=conn)
+    workers_table = sa.Table("workers", metadata, autoload_with=conn)
+    query = sa.select(workers_table.c.name)
+    res = conn.execute(query).fetchall()
+    workers = list(map(lambda x: x[0], res))
+    conn.close()
+    return workers
+
+
+def get_jobs():
+    """
+    Get all jobs from the database.
+
+    Returns:
+        list: A list of jobs.
+    """
+    conn = sa.create_engine(CONN).connect()
+    metadata = sa.MetaData()
+    metadata.reflect(bind=conn)
+    jobs_table = sa.Table("jobs", metadata, autoload_with=conn)
+    query = sa.select(jobs_table.c.name)
+    res = conn.execute(query).fetchall()
+    jobs = list(map(lambda x: x[0], res))
+    conn.close()
+    return jobs
+
+
+def get_job_worker_mapping():
+    """
+    Get a mapping of jobs to workers.
+
+    Returns:
+        dict: A dictionary mapping jobs to workers.
+    """
+    conn = sa.create_engine(CONN).connect()
+    metadata = sa.MetaData()
+    metadata.reflect(bind=conn)
+    jobs_table = sa.Table("jobs", metadata, autoload_with=conn)
+    workers_table = sa.Table("workers", metadata, autoload_with=conn)
+    query = (
+        sa.select(jobs_table.c.name, workers_table.c.name)
+        .select_from(
+            workers_table.join(jobs_table, jobs_table.c.id == workers_table.c.job_id)
+        )
+    )
+    res = conn.execute(query).fetchall()
+    mapping = {}
+    for job, worker in res:
+        if job not in mapping:
+            mapping[job] = [worker]
+        else:
+            mapping[job].append(worker)
+    conn.close()
+    return mapping
+
+def get_cv_no_chunks(table_name: str):
+    """
+    Get the number of chunks for a given table.
+
+    Args:
+        table_name (str): The name of the table.
+
+    Returns:
+        int: The number of chunks.
+    """
+    conn = sa.create_engine(CONN).connect()
+    metadata = sa.MetaData()
+    metadata.reflect(bind=conn)
+    table = sa.Table("cv_data", metadata)
+    query = sa.select(table.c.chunk).where(table.c.table_name == table_name)
+    res = conn.execute(query).fetchall()
+    conn.close()
+    return len(res)
+
 if __name__ == "__main__":
     drop_workers_table()
     drop_jobs_table()
@@ -438,8 +554,8 @@ if __name__ == "__main__":
     add_worker("worker2", "test")
     print(get_workers_by_name("test"))
     print(get_workers_by_id(1))
-    test_df = pd.read_csv("trader-dashboard/data/master.csv")
+    test_df = pd.read_csv("trader-dashboard/data/master.csv", parse_dates=True).iloc[:, 1:]
     insert_raw_table(test_df, "test_table")
     print(get_raw_table("test_table"))
-    chunk_raw_table("test_table", 1000)
+    chunk_raw_table("test_table", 240)
     print(read_chunked_table("test_table", 0))
