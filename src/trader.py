@@ -133,7 +133,10 @@ class Trader(gym.Env):
         self.risk_aversion = risk_aversion
         self.data = db.read_chunked_table(table_name, chunk)
         self.data['spot'] = self.data['closeadj']
-        self.data['capexratio'] = self.data['capex'] / self.data['equity']
+        self.data['capexratio'] = (
+            self.data['capex'] / self.data['equity']
+            ).fillna(0)
+        self.data = self.data.ffill()
         self.dates = np.array(self.data.index.get_level_values(0).unique())
         self.symbols = np.array(self.data.index.get_level_values(1).unique())
         self.no_symbols = len(self.symbols)
@@ -325,6 +328,7 @@ class Trader(gym.Env):
         spot_window = self.data.loc[prev_dates, "spot"].to_frame()
         assert isinstance(spot_window, pd.DataFrame)
         log_spot_window = np.log(spot_window)
+        assert np.all(~np.isnan(log_spot_window)), "log_spot_window contains NaN values"
         assert isinstance(log_spot_window, pd.DataFrame)
         if self.current_step > 0:
             spot_returns = log_spot_window.unstack().diff().dropna().iloc[-1]
@@ -332,6 +336,7 @@ class Trader(gym.Env):
         else:
             spot_returns = np.zeros(self.no_symbols)
         assert isinstance(spot_returns, np.ndarray)
+        assert np.all(~np.isnan(spot_returns)), "spot_returns contains NaN values"
         assert isinstance(spot, pd.Series)
         spot_window_vals = spot_window.values
         spot_values = spot.values
@@ -349,8 +354,7 @@ class Trader(gym.Env):
             slices.append(this_slice)
         stock_state = np.concatenate(slices)
         stock_state = np.concatenate([stock_state, spot_rank, spot_returns])
-        macro_state = [self.data.loc[curr_date, col] for col in macro_cols]
-        macro_state = np.array(macro_state)
+        macro_state = self.data.loc[curr_date, macro_cols].values
         macro_state = np.concatenate(macro_state)[slice(None, None, macro_len)]
         state = np.concatenate(
             [stock_state, self.net_position_weights, self.model_portfolio]
@@ -398,7 +402,7 @@ class Trader(gym.Env):
         float: The return volatility.
         """
         assert isinstance(self.return_series, np.ndarray)
-        std = np.std(self.return_series)
+        std = np.std(self.return_series) if len(self.return_series) > 0 else 0.05
         assert isinstance(std, float)
         return std
 
@@ -411,7 +415,7 @@ class Trader(gym.Env):
         """
         ret = self._get_return()
         rf_ret = self.rate / 252
-        ret_vol = self.return_volatility or 1
+        ret_vol = self.return_volatility or 0.05
         reward = yeojohnson((ret - rf_ret) / ret_vol, self.risk_aversion)
         assert isinstance(reward, np.ndarray)
         return reward
@@ -514,7 +518,9 @@ class Trader(gym.Env):
         Returns:
             np.ndarray: The observation for the current step.
         """
-        return np.array(self.state_buffer)
+        obs = np.array(self.state_buffer)
+        assert obs.shape == (self.buffer_len, 17 * self.no_symbols + 43)
+        return obs
 
     def render(self, mode: str = "human") -> None:
         """
