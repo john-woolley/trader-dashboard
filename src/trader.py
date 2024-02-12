@@ -326,14 +326,14 @@ class Trader(gym.Env):
         spot_window = self.data.loc[prev_dates, "spot"].to_frame()
         log_spot_window = spot_window.apply(np.log)
         if self.current_step > 0:
-            spot_returns = log_spot_window.unstack().diff().dropna().iloc[-1]
+            spot_returns = log_spot_window.unstack().diff().iloc[-1]
             spot_returns = spot_returns.values
         else:
             spot_returns = np.zeros(self.no_symbols)
         spot_window_vals = spot_window.values
         spot_values = spot.values
         spot_rank = get_percentile(spot_values, spot_window_vals, axis=0)
-        self.spot = spot.values
+        self.spot = spot_values
         macro_state = self.data.loc[curr_date, macro_cols].values
         slices = self.data.loc[curr_date, used_cols]
         slices = slices.reindex(self.symbols, fill_value=0)
