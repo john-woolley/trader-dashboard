@@ -207,14 +207,30 @@ def start_handler(request: Request):
         JSON response indicating the status of the training process,
         the model name, and the test render file name.
     """
-
+    args = request.args
     logger.info("Starting training")
-    table_name = request.args.get("table_name")
-    start_date = request.args.get("train_start_date")
-    ncpu = int(request.args.get("ncpu", 1))
-    jobname = request.args.get("jobname", "default")
-    render_mode = request.args.get("render_mode", None)
-    network = request.args.get("network", None)
+    table_name = args.get("table_name")
+    start_date = args.get("train_start_date")
+    ncpu = int(args.get("ncpu", 1))
+    jobname = args.get("jobname", "default")
+    render_mode = args.get("render_mode", None)
+    network_depth = int(args.get("network_depth", 4))
+    batch_size = int(args.get("batch_size", 1024))
+    progress_bar = bool(int(args.get("progress_bar", 1)))
+    use_sde = bool(int(args.get("use_sde", 0)))
+    device = args.get("device", "auto")
+    train_freq = int(args.get("train_freq", 1))
+    network_width = []
+    for i in range(network_depth):
+        network_width.append(int(request.args.get(f"network_width_{i}", 4096)))
+    network = {
+        "pi": network_width,
+        "vf": network_width,
+        "qf": network_width,
+    }
+    logger.info("Network architecture: %s", network)
+    assert network is not None
+    assert isinstance(network, dict)
     db.add_job(jobname)
     timesteps = int(request.args.get("timesteps", 1000))
     cv_periods = 5
@@ -240,22 +256,22 @@ def start_handler(request: Request):
             request.app.shared_ctx.hallpass.release()
             logger.info("Released hallpass")
         policy_kwargs = {
-            "net_arch": {
-                "pi": [4096, 2048, 1024, 1024],
-                "vf": [4096, 2048, 1024, 1024],
-                "qf": [4096, 2048, 1024, 1024],
-            }
+            "net_arch": network,
         }
         model_train = model(
             "MlpPolicy",
             env,
             policy_kwargs=policy_kwargs,
-            verbose=1,
-            batch_size=1,
-            use_sde=True,
+            verbose=0,
+            batch_size=batch_size,
+            use_sde=use_sde,
+            device=device,
+            tensorboard_log=log_dir,
+            train_freq=train_freq,
         )
-        model_train.learn(total_timesteps=timesteps)
+        model_train.learn(total_timesteps=timesteps, progress_bar=progress_bar)
         model_train.save(f"model_{i}")
+        env.close()
         env_test = Trader(table_name, i + 1, test=True, render_mode=render_mode)
         model_handle = f"model_{i}"
         model_test = model.load(model_handle, env=env_test)

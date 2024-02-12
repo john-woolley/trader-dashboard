@@ -5,12 +5,14 @@ It provides functions for creating tables, inserting data,
 retrieving data, and managing jobs and workers.
 """
 
+import numpy as np
 import sqlalchemy as sa
 import psycopg2
 import pandas as pd
 import cloudpickle
 
 from sqlalchemy.sql import update
+from sqlalchemy import create_engine, MetaData, Table, Column
 
 CONN = "postgresql+psycopg2://trader_dashboard@0.0.0.0:5432/trader_dashboard"
 
@@ -427,6 +429,7 @@ def chunk_raw_table(
     insert_chunked_table(chunks, table_name)
     return chunks
 
+
 def get_names_in_cv_table() -> list:
     """
     Get the names of all tables in the cv_data table.
@@ -461,7 +464,7 @@ def insert_chunked_table(chunks: list, table_name: str) -> None:
         add_cv_data(table_name, blob, i)
 
 
-def add_column_to_table(table_name: str, column_name: str, column_type: str) -> None:
+def add_column_to_table(table_name: str, column_name: str, column_type: type) -> None:
     """
     Add a column to a table in the database.
 
@@ -473,13 +476,15 @@ def add_column_to_table(table_name: str, column_name: str, column_type: str) -> 
     Returns:
         None
     """
-    conn = sa.create_engine(CONN).connect()
-    metadata = sa.MetaData()
+    engine = create_engine(CONN)
+    conn = engine.connect()
+    metadata = MetaData()
     metadata.reflect(bind=conn)
-    table = sa.Table(table_name, metadata, autoload_with=conn)
-    query = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
-    conn.execute(query)
+    table = Table(table_name, metadata, autoload=True)
+    column: sa.Column = Column(column_name, column_type)
+    column.create(table)
     conn.close()
+
 
 def add_spot_to_raw_table(table_name: str, col_to_use: str) -> None:
     """
@@ -543,7 +548,7 @@ def create_std_cv_table() -> None:
     conn.commit()
     conn.close()
 
- 
+
 def insert_standardized_cv_data(table_name: str, chunk: int, data: bytes) -> None:
     """
     Insert standardized CV data into the database.
@@ -583,11 +588,11 @@ def standardize_cv_columns(table_name: str, chunk: int) -> None:
     else:
         std_df = pd.concat([read_chunked_table(table_name, i) for i in range(chunk)])
     df = df.fillna(0)
-    preserved_cols = ['open', 'high', 'low', 'close', 'closeadj']
-    preserved_mask = df.columns.isin(preserved_cols)
+    preserved_cols = ["open", "high", "low", "close", "closeadj"]
+    preserved_mask: np.ndarray = df.columns.isin(preserved_cols)
     df.loc[:, ~preserved_mask] = (
-        df.loc[:, ~preserved_mask] - std_df.loc[:, ~preserved_mask].mean()
-    ) / std_df.loc[:, ~preserved_mask].std()
+        df.loc[:, ~preserved_mask] - std_df.loc[:, ~preserved_mask].mean()  # type: ignore
+    ) / std_df.loc[:, ~preserved_mask].std()  # type: ignore
     blob = cloudpickle.dumps(df)
     insert_standardized_cv_data(table_name, chunk, blob)
 
@@ -644,6 +649,7 @@ def remove_table_name_from_cv_table(table_name: str) -> None:
     conn.execute(query)
     conn.commit()
     conn.close()
+
 
 def get_workers():
     """
@@ -726,6 +732,7 @@ def get_cv_no_chunks(table_name: str):
     conn.close()
     return len(res)
 
+
 def get_std_cv_data_by_name(table_name: str, chunk: int) -> bytes:
     """
     Retrieve standardized CV data by table name and chunk index.
@@ -752,6 +759,7 @@ def get_std_cv_data_by_name(table_name: str, chunk: int) -> bytes:
     conn.close()
     return res
 
+
 def read_std_cv_table(table_name: str, chunk: int) -> pd.DataFrame:
     """
     Read a standardized cv table from the database.
@@ -766,6 +774,7 @@ def read_std_cv_table(table_name: str, chunk: int) -> pd.DataFrame:
     blob = get_std_cv_data_by_name(table_name, chunk)
     df = cloudpickle.loads(blob)
     return df
+
 
 if __name__ == "__main__":
     drop_workers_table()
@@ -797,4 +806,3 @@ if __name__ == "__main__":
     print(read_std_cv_table("test_table", 0))
     remove_table_name_from_cv_table("test_table")
     print(get_cv_no_chunks("test_table"))
-

@@ -5,3 +5,5 @@ venv/
 .tox/
 src/UNKNOWN.egg-info/
 src/__pycache__/
+events.outs.tfevents.*
+log/SAC*

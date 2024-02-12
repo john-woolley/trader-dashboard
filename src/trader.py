@@ -324,7 +324,7 @@ class Trader(gym.Env):
             prev_dates = self.dates[p + s - 10 : p + s + 1]
         spot = self.data.loc[curr_date, "spot"]
         spot_window = self.data.loc[prev_dates, "spot"].to_frame()
-        log_spot_window = np.log(spot_window)
+        log_spot_window = spot_window.apply(np.log)
         if self.current_step > 0:
             spot_returns = log_spot_window.unstack().diff().dropna().iloc[-1]
             spot_returns = spot_returns.values
@@ -334,11 +334,12 @@ class Trader(gym.Env):
         spot_values = spot.values
         spot_rank = get_percentile(spot_values, spot_window_vals, axis=0)
         self.spot = spot.values
+        macro_state = self.data.loc[curr_date, macro_cols].values
         slices = self.data.loc[curr_date, used_cols]
         slices = slices.reindex(self.symbols, fill_value=0)
         stock_state = np.concatenate(slices.values)
         stock_state = np.concatenate([stock_state, spot_rank, spot_returns])
-        macro_state = self.data.loc[curr_date, macro_cols].values
+        
         macro_state = np.concatenate(macro_state)[slice(None, None, macro_len)]
         state = np.concatenate(
             [stock_state, self.net_position_weights, self.model_portfolio]
@@ -530,6 +531,7 @@ class Trader(gym.Env):
             logger.info(output)
         else:
             pass
+
         state_dict = {
             "Date": [self.dates[self.current_index]],
             "market_value": [self.current_portfolio_value],
@@ -543,7 +545,8 @@ class Trader(gym.Env):
         action_dict = {
             f"action_{self.symbols[i]}": self.action[i] for i in range(self.no_symbols)
         }
-        state_dict = {**state_dict, **net_lev_dict, **action_dict}
+        state_dict.update(net_lev_dict)
+        state_dict.update(action_dict)
+
         step_df = pd.DataFrame.from_dict(state_dict)
-        dfs = [self.render_df, step_df]
-        self.render_df = pd.concat(dfs, ignore_index=True)
+        self.render_df = pd.concat([self.render_df, step_df], ignore_index=True)
