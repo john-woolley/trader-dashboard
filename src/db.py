@@ -8,7 +8,7 @@ retrieving data, and managing jobs and workers.
 import numpy as np
 import sqlalchemy as sa
 import psycopg2
-import pandas as pd
+import polars as pl
 import cloudpickle
 
 from sqlalchemy.sql import update
@@ -36,7 +36,7 @@ def drop_jobs_table():
         table = sa.Table("jobs", sa.MetaData(), autoload_with=conn)
         table.drop(conn, checkfirst=True)
         conn.commit()
-    except sa.exc.DBAPIError as e:
+    except sa.exc.NoSuchTableError as e:
         print(e)
     finally:
         conn.close()
@@ -51,7 +51,7 @@ def drop_workers_table():
         table = sa.Table("workers", sa.MetaData(), autoload_with=conn)
         table.drop(conn, checkfirst=True)
         conn.commit()
-    except sa.exc.DBAPIError as e:
+    except sa.exc.NoSuchTableError as e:
         print(e)
     finally:
         conn.close()
@@ -294,7 +294,7 @@ def drop_cv_data_table():
         table = sa.Table("cv_data", sa.MetaData(), autoload_with=conn)
         table.drop(conn, checkfirst=True)
         conn.commit()
-    except sa.exc.DBAPIError as e:
+    except sa.exc.NoSuchTableError as e:
         print(e)
     finally:
         conn.close()
@@ -331,7 +331,7 @@ def get_cv_data_by_name(table_name: str, i: int) -> bytes:
     return res
 
 
-def insert_raw_table(df: pd.DataFrame, table_name: str) -> None:
+def insert_raw_table(df: pl.DataFrame, table_name: str) -> None:
     """
     Inserts a pandas DataFrame into a SQL table.
 
@@ -343,11 +343,11 @@ def insert_raw_table(df: pd.DataFrame, table_name: str) -> None:
         None
     """
     conn = sa.create_engine(CONN).connect()
-    df.to_sql(table_name, conn, if_exists="replace", index=False)
+    df.write_database(table_name, CONN, if_table_exists="replace")
     conn.close()
 
 
-def get_raw_table(table_name: str) -> pd.DataFrame:
+def get_raw_table(table_name: str) -> pl.LazyFrame:
     """
     Retrieves a raw table from the database.
 
@@ -360,12 +360,14 @@ def get_raw_table(table_name: str) -> pd.DataFrame:
     conn = sa.create_engine(CONN).connect()
     metadata = sa.MetaData()
     metadata.reflect(bind=conn)
-    df = pd.read_sql_table(table_name, conn)
+    table = sa.Table(table_name, metadata, autoload_with=conn)
+    query = sa.select(table)
+    df = pl.read_database(query, conn)
     conn.close()
-    return df
+    return df.lazy()
 
 
-def chunk_df_by_number(df: pd.DataFrame, no_chunks: int) -> list:
+def chunk_df_by_number(df: pl.LazyFrame, no_chunks: int) -> list:
     """
     Splits a DataFrame into a specified number of chunks.
 
@@ -382,7 +384,7 @@ def chunk_df_by_number(df: pd.DataFrame, no_chunks: int) -> list:
     return chunks
 
 
-def chunk_df_by_size(df: pd.DataFrame, chunk_size: int) -> list:
+def chunk_df_by_size(df: pl.LazyFrame, chunk_size: int) -> list:
     """
     Splits a DataFrame into chunks of a specified size.
 
@@ -393,15 +395,14 @@ def chunk_df_by_size(df: pd.DataFrame, chunk_size: int) -> list:
     Returns:
         list: A list of DataFrame chunks.
     """
-    df = df.set_index(["date", "ticker"])
-    total_rows = len(df.index.get_level_values("date").unique())
+    unique_dates = df.select(pl.col("date")).unique().collect()["date"]
+    total_rows = unique_dates.count()
     num_chunks = total_rows // chunk_size
     chunks = [
-        df.loc[
-            df.index.get_level_values("date").unique()[
-                i * chunk_size : (i + 1) * chunk_size
-            ]
-        ]
+        df.filter(
+            pl.col("date").is_in(
+                unique_dates.slice(i * chunk_size, (i + 1) * chunk_size)
+        ))
         for i in range(num_chunks)
     ]
     return chunks
@@ -460,7 +461,7 @@ def insert_chunked_table(chunks: list, table_name: str) -> None:
         None
     """
     for i, chunk in enumerate(chunks):
-        blob = cloudpickle.dumps(chunk)
+        blob = cloudpickle.dumps(chunk.collect())
         add_cv_data(table_name, blob, i)
 
 
@@ -582,17 +583,14 @@ def standardize_cv_columns(table_name: str, chunk: int) -> None:
     Returns:
         None
     """
-    df = read_chunked_table(table_name, chunk)
+    df = read_chunked_table(table_name, chunk).collect()
     if chunk == 0:
-        std_df = read_chunked_table(table_name, 0)
+        std_df = read_chunked_table(table_name, 0).collect()
     else:
-        std_df = pd.concat([read_chunked_table(table_name, i) for i in range(chunk)])
-    df = df.fillna(0)
+        std_df = pl.concat([read_chunked_table(table_name, i) for i in range(chunk)]).collect()
     preserved_cols = ["open", "high", "low", "close", "closeadj"]
-    preserved_mask: np.ndarray = df.columns.isin(preserved_cols)
-    df.loc[:, ~preserved_mask] = (
-        df.loc[:, ~preserved_mask] - std_df.loc[:, ~preserved_mask].mean()  # type: ignore
-    ) / std_df.loc[:, ~preserved_mask].std()  # type: ignore
+    numerical_cols = [col for col in df.columns if col not in preserved_cols and df[col].dtype.is_numeric()]
+    df = df.with_columns((pl.col(col).sub(std_df[col].mean())).truediv(std_df[col].std()).alias(col) for col in numerical_cols)
     blob = cloudpickle.dumps(df)
     insert_standardized_cv_data(table_name, chunk, blob)
 
@@ -609,13 +607,13 @@ def drop_std_cv_data_table():
         table = sa.Table("std_cv_data", sa.MetaData(), autoload_with=conn)
         table.drop(conn, checkfirst=True)
         conn.commit()
-    except sa.exc.DBAPIError as e:
+    except sa.exc.NoSuchTableError as e:
         print(e)
     finally:
         conn.close()
 
 
-def read_chunked_table(table_name: str, i: int) -> pd.DataFrame:
+def read_chunked_table(table_name: str, i: int) -> pl.LazyFrame:
     """
     Read a chunked table from the database.
 
@@ -628,7 +626,7 @@ def read_chunked_table(table_name: str, i: int) -> pd.DataFrame:
     """
     blob = get_cv_data_by_name(table_name, i)
     df = cloudpickle.loads(blob)
-    return df
+    return df.lazy()
 
 
 def remove_table_name_from_cv_table(table_name: str) -> None:
@@ -760,7 +758,7 @@ def get_std_cv_data_by_name(table_name: str, chunk: int) -> bytes:
     return res
 
 
-def read_std_cv_table(table_name: str, chunk: int) -> pd.DataFrame:
+def read_std_cv_table(table_name: str, chunk: int) -> pl.LazyFrame:
     """
     Read a standardized cv table from the database.
 
@@ -773,7 +771,7 @@ def read_std_cv_table(table_name: str, chunk: int) -> pd.DataFrame:
     """
     blob = get_std_cv_data_by_name(table_name, chunk)
     df = cloudpickle.loads(blob)
-    return df
+    return df.lazy()
 
 
 if __name__ == "__main__":
@@ -789,9 +787,7 @@ if __name__ == "__main__":
     add_worker("worker2", "test")
     print(get_workers_by_name("test"))
     print(get_workers_by_id(1))
-    test_df = pd.read_csv("trader-dashboard/data/master.csv", parse_dates=True).iloc[
-        :, 1:
-    ]
+    test_df = pl.read_csv("trader-dashboard/data/master.csv").drop("").sort("date", "ticker")
     insert_raw_table(test_df, "test_table")
     print(get_raw_table("test_table"))
     chunk_raw_table("test_table", 240)
@@ -803,6 +799,6 @@ if __name__ == "__main__":
     standardize_cv_columns("test_table", 2)
     standardize_cv_columns("test_table", 3)
     standardize_cv_columns("test_table", 4)
-    print(read_std_cv_table("test_table", 0))
+    print(read_std_cv_table("test_table", 0).collect())
     remove_table_name_from_cv_table("test_table")
     print(get_cv_no_chunks("test_table"))

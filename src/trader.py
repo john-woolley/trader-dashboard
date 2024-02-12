@@ -50,6 +50,7 @@ from collections import deque
 import numpy as np
 import gymnasium as gym
 import pandas as pd
+import polars as pl
 
 from gymnasium import spaces
 from scipy.stats import yeojohnson
@@ -74,6 +75,7 @@ def get_percentile(val, m, axis=0):
     float: The percentile of the value in the array.
 
     """
+    val = val.reshape(-1, 1)
     return (m > val).argmax(axis) / m.shape[axis]
 
 
@@ -132,11 +134,12 @@ class Trader(gym.Env):
         self.render_mode = render_mode
         self.risk_aversion = risk_aversion
         self.data = db.read_std_cv_table(table_name, chunk)
-        self.data["spot"] = self.data["closeadj"]
-        self.data["capexratio"] = (self.data["capex"] / self.data["equity"]).fillna(0)
-        self.data = self.data.ffill()
-        self.dates = np.array(self.data.index.get_level_values(0).unique())
-        self.symbols = np.array(self.data.index.get_level_values(1).unique())
+        self.data = self.data.with_columns(
+            pl.col("capex").truediv(pl.col("equity")).alias("capexratio"),
+            pl.col("closeadj").alias("spot")
+        )
+        self.dates = self.data.select("date").unique().collect().to_numpy().flatten()
+        self.symbols = self.data.select("ticker").unique().collect().to_numpy().flatten()
         self.no_symbols = len(self.symbols)
         self.test = test
         self.ep_length = ep_length
@@ -294,9 +297,7 @@ class Trader(gym.Env):
             self.period = 0
         else:
             self.period = random.randint(0, len(self.dates) - self.ep_length)  # nosec
-        self.spot = self.data.loc[self.dates[self.period + self.current_step], "spot"]
-        assert isinstance(self.spot, pd.Series)
-        self.spot = self.spot.values
+        self.spot = self.data.select("spot", "date").filter(pl.col("date") == self.dates[self.period + self.current_step]).drop("date").collect().to_numpy().flatten()
         self.balance = self.initial_balance
         self.log_ret = 0
         self.state_buffer = deque([], self.buffer_len)
@@ -318,28 +319,23 @@ class Trader(gym.Env):
         s = self.current_step
         macro_len = len(macro_cols)
         curr_date = self.dates[p + s]
-        if self.current_step < 10:
-            prev_dates = self.dates[p : p + s + 1]
+        if self.current_step < self.buffer_len:
+            prev_dates = self.dates[p: p + s + 1]
         else:
-            prev_dates = self.dates[p + s - 10 : p + s + 1]
-        spot = self.data.loc[curr_date, "spot"]
-        spot_window = self.data.loc[prev_dates, "spot"].to_frame()
-        log_spot_window = spot_window.apply(np.log)
+            prev_dates = self.dates[p + s - self.buffer_len: p + s + 1]
+        spot = self.data.select("spot", "date").filter(pl.col("date") == curr_date).drop("date").collect().to_numpy().flatten()
+        self.spot = spot
+        spot_window = self.data.select("spot", "date", "ticker").filter(pl.col("date").is_in(prev_dates)).drop("date", "ticker").collect().to_numpy().reshape(self.no_symbols, -1)
+        log_spot_window = np.log(spot_window)
         if self.current_step > 0:
-            spot_returns = log_spot_window.unstack().diff().iloc[-1]
-            spot_returns = spot_returns.values
+            spot_returns = spot_returns = np.diff(log_spot_window, axis=1)[:, -1]
         else:
             spot_returns = np.zeros(self.no_symbols)
-        spot_window_vals = spot_window.values
-        spot_values = spot.values
-        spot_rank = get_percentile(spot_values, spot_window_vals, axis=0)
-        self.spot = spot_values
-        macro_state = self.data.loc[curr_date, macro_cols].values
-        slices = self.data.loc[curr_date, used_cols]
-        slices = slices.reindex(self.symbols, fill_value=0)
-        stock_state = np.concatenate(slices.values)
+        spot_rank = get_percentile(spot, spot_window, axis=1)
+        macro_state = self.data.select(macro_cols+["date"]).filter(pl.col("date") == curr_date).drop("date").collect().to_numpy()
+        slices = self.data.select(used_cols+["date"]).filter(pl.col("date") == curr_date).drop("date").collect().to_numpy()
+        stock_state = np.concatenate(slices)
         stock_state = np.concatenate([stock_state, spot_rank, spot_returns])
-        
         macro_state = np.concatenate(macro_state)[slice(None, None, macro_len)]
         state = np.concatenate(
             [stock_state, self.net_position_weights, self.model_portfolio]
