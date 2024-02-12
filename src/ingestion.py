@@ -27,7 +27,7 @@ used_cols = [
     "ps",
     "pe",
     "de",
-    "capexratio",
+    "capex",
     "revenue",
 ]
 macro_cols = [

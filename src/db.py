@@ -10,6 +10,8 @@ import psycopg2
 import pandas as pd
 import cloudpickle
 
+from sqlalchemy.sql import update
+
 CONN = "postgresql+psycopg2://trader_dashboard@0.0.0.0:5432/trader_dashboard"
 
 
@@ -425,6 +427,23 @@ def chunk_raw_table(
     insert_chunked_table(chunks, table_name)
     return chunks
 
+def get_names_in_cv_table() -> list:
+    """
+    Get the names of all tables in the cv_data table.
+
+    Returns:
+        list: A list of table names.
+    """
+    conn = sa.create_engine(CONN).connect()
+    metadata = sa.MetaData()
+    metadata.reflect(bind=conn)
+    table = sa.Table("cv_data", metadata)
+    query = sa.select(table.c.table_name).distinct()
+    res = conn.execute(query).fetchall()
+    names = list(map(lambda x: x[0], res))
+    conn.close()
+    return names
+
 
 def insert_chunked_table(chunks: list, table_name: str) -> None:
     """
@@ -442,6 +461,155 @@ def insert_chunked_table(chunks: list, table_name: str) -> None:
         add_cv_data(table_name, blob, i)
 
 
+def add_column_to_table(table_name: str, column_name: str, column_type: str) -> None:
+    """
+    Add a column to a table in the database.
+
+    Args:
+        table_name (str): The name of the table.
+        column_name (str): The name of the column to be added.
+        column_type (str): The type of the column to be added.
+
+    Returns:
+        None
+    """
+    conn = sa.create_engine(CONN).connect()
+    metadata = sa.MetaData()
+    metadata.reflect(bind=conn)
+    table = sa.Table(table_name, metadata, autoload_with=conn)
+    query = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+    conn.execute(query)
+    conn.close()
+
+def add_spot_to_raw_table(table_name: str, col_to_use: str) -> None:
+    """
+    Add a spot price column to the raw table.
+
+    Args:
+        table_name (str): The name of the table.
+        col_to_use (str): The name of the column to use for the spot price.
+        col_to_add (str): The name of the column to add to the table.
+
+    Returns:
+        None
+    """
+    conn = sa.create_engine(CONN).connect()
+    metadata = sa.MetaData()
+    metadata.reflect(bind=conn)
+    table = sa.Table(table_name, metadata, autoload_with=conn)
+    stmt = update(table).values(spot=table.c[col_to_use])
+    conn.execute(stmt)
+    conn.close()
+
+
+def add_capex_ratio_to_raw_table(table_name: str) -> None:
+    """
+    Add a capex to equity ratio column to the raw table.
+
+    Args:
+        table_name (str): The name of the table.
+
+    Returns:
+        None
+    """
+    conn = sa.create_engine(CONN).connect()
+    metadata = sa.MetaData()
+    metadata.reflect(bind=conn)
+    table = sa.Table(table_name, metadata, autoload_with=conn)
+    stmt = update(table).values(capex_ratio=table.c.capex / table.c.equity)
+    conn.execute(stmt)
+    conn.close()
+
+
+def create_std_cv_table() -> None:
+    """
+    Create a standardized cv_data table in the database.
+
+    Returns:
+        None
+    """
+    conn = sa.create_engine(CONN).connect()
+    metadata = sa.MetaData()
+    metadata.reflect(bind=conn)
+    table = sa.Table(
+        "std_cv_data",
+        metadata,
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("table_name", sa.String),
+        sa.Column("chunk", sa.Integer),
+        sa.Column("data", sa.LargeBinary),
+    )
+    table.create(conn, checkfirst=True)
+    conn.commit()
+    conn.close()
+
+ 
+def insert_standardized_cv_data(table_name: str, chunk: int, data: bytes) -> None:
+    """
+    Insert standardized CV data into the database.
+
+    Args:
+        table_name (str): The name of the table.
+        chunk (int): The index of the chunk.
+        data (bytes): The standardized CV data.
+
+    Returns:
+        None
+    """
+    conn = sa.create_engine(CONN).connect()
+    metadata = sa.MetaData()
+    metadata.reflect(bind=conn)
+    table = sa.Table("std_cv_data", metadata)
+    ins = table.insert().values(table_name=table_name, data=data, chunk=chunk)
+    conn.execute(ins)
+    conn.commit()
+    conn.close()
+
+
+def standardize_cv_columns(table_name: str, chunk: int) -> None:
+    """
+    Standardize the columns of a chunked table in the database.
+
+    Args:
+        table_name (str): The name of the table.
+        chunk (int): The index of the chunk.
+
+    Returns:
+        None
+    """
+    df = read_chunked_table(table_name, chunk)
+    if chunk == 0:
+        std_df = read_chunked_table(table_name, 0)
+    else:
+        std_df = pd.concat([read_chunked_table(table_name, i) for i in range(chunk)])
+    df = df.fillna(0)
+    preserved_cols = ['open', 'high', 'low', 'close', 'closeadj']
+    preserved_mask = df.columns.isin(preserved_cols)
+    df.loc[:, ~preserved_mask] = (
+        df.loc[:, ~preserved_mask] - std_df.loc[:, ~preserved_mask].mean()
+    ) / std_df.loc[:, ~preserved_mask].std()
+    blob = cloudpickle.dumps(df)
+    insert_standardized_cv_data(table_name, chunk, blob)
+
+
+def drop_std_cv_data_table():
+    """
+    Drop the standardized cv_data table from the database.
+
+    Returns:
+        None
+    """
+    conn = sa.create_engine(CONN).connect()
+    try:
+        table = sa.Table("std_cv_data", sa.MetaData(), autoload_with=conn)
+        table.drop(conn, checkfirst=True)
+        conn.commit()
+    except sa.exc.DBAPIError as e:
+        print(e)
+    finally:
+        conn.close()
+
+
 def read_chunked_table(table_name: str, i: int) -> pd.DataFrame:
     """
     Read a chunked table from the database.
@@ -457,6 +625,25 @@ def read_chunked_table(table_name: str, i: int) -> pd.DataFrame:
     df = cloudpickle.loads(blob)
     return df
 
+
+def remove_table_name_from_cv_table(table_name: str) -> None:
+    """
+    Remove a table from the cv_data table.
+
+    Args:
+        table_name (str): The name of the table to remove.
+
+    Returns:
+        None
+    """
+    conn = sa.create_engine(CONN).connect()
+    metadata = sa.MetaData()
+    metadata.reflect(bind=conn)
+    table = sa.Table("cv_data", metadata, autoload_with=conn)
+    query = sa.delete(table).where(table.c.table_name == table_name)
+    conn.execute(query)
+    conn.commit()
+    conn.close()
 
 def get_workers():
     """
@@ -539,11 +726,52 @@ def get_cv_no_chunks(table_name: str):
     conn.close()
     return len(res)
 
+def get_std_cv_data_by_name(table_name: str, chunk: int) -> bytes:
+    """
+    Retrieve standardized CV data by table name and chunk index.
+
+    Args:
+        table_name (str): The name of the table.
+        chunk (int): The chunk index.
+
+    Returns:
+        bytes: The standardized CV data.
+    """
+    conn = sa.create_engine(CONN).connect()
+    metadata = sa.MetaData()
+    metadata.reflect(bind=conn)
+    table = sa.Table("std_cv_data", metadata)
+    query = (
+        sa.select(table.c.data)
+        .where(table.c.table_name == table_name)
+        .where(table.c.chunk == chunk)
+    )
+    fetched = conn.execute(query).fetchone()
+    assert fetched is not None, f"Data not found for {table_name} chunk {chunk}"
+    res = fetched[0]
+    conn.close()
+    return res
+
+def read_std_cv_table(table_name: str, chunk: int) -> pd.DataFrame:
+    """
+    Read a standardized cv table from the database.
+
+    Args:
+        table_name (str): The name of the table.
+        chunk (int): The index of the chunk.
+
+    Returns:
+        pd.DataFrame: The standardized cv table as a pandas DataFrame.
+    """
+    blob = get_std_cv_data_by_name(table_name, chunk)
+    df = cloudpickle.loads(blob)
+    return df
 
 if __name__ == "__main__":
     drop_workers_table()
     drop_jobs_table()
     drop_cv_data_table()
+    drop_std_cv_data_table()
     create_jobs_table()
     create_workers_table()
     create_cv_data_table()
@@ -559,3 +787,14 @@ if __name__ == "__main__":
     print(get_raw_table("test_table"))
     chunk_raw_table("test_table", 240)
     print(read_chunked_table("test_table", 0))
+    print(get_names_in_cv_table())
+    create_std_cv_table()
+    standardize_cv_columns("test_table", 0)
+    standardize_cv_columns("test_table", 1)
+    standardize_cv_columns("test_table", 2)
+    standardize_cv_columns("test_table", 3)
+    standardize_cv_columns("test_table", 4)
+    print(read_std_cv_table("test_table", 0))
+    remove_table_name_from_cv_table("test_table")
+    print(get_cv_no_chunks("test_table"))
+

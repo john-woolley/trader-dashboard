@@ -213,10 +213,11 @@ def start_handler(request: Request):
     start_date = request.args.get("train_start_date")
     ncpu = int(request.args.get("ncpu", 1))
     jobname = request.args.get("jobname", "default")
-    render_mode = request.args.get("render_mode", "none")
+    render_mode = request.args.get("render_mode", None)
+    network = request.args.get("network", None)
     db.add_job(jobname)
     timesteps = int(request.args.get("timesteps", 1000))
-    cv_periods = db.get_cv_no_chunks(table_name)
+    cv_periods = 5
     logger.info(
         "Starting training with cv_periods=%s and train_start_date=%s",
         cv_periods,

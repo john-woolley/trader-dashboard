@@ -131,7 +131,7 @@ class Trader(gym.Env):
         super().__init__()
         self.render_mode = render_mode
         self.risk_aversion = risk_aversion
-        self.data = db.read_chunked_table(table_name, chunk)
+        self.data = db.read_std_cv_table(table_name, chunk)
         self.data["spot"] = self.data["closeadj"]
         self.data["capexratio"] = (self.data["capex"] / self.data["equity"]).fillna(0)
         self.data = self.data.ffill()

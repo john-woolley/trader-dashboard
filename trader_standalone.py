@@ -3,7 +3,6 @@ from src.trader import Trader
 import logging
 import os
 import numpy as np
-from src import db
 from functools import partial
 from stable_baselines3 import SAC
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, DummyVecEnv
@@ -16,7 +15,6 @@ if __name__ == "__main__":
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
     logging.basicConfig(
-        filename=os.path.join(log_dir, "trader_standalone.log"),
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
@@ -35,7 +33,7 @@ if __name__ == "__main__":
     jobname = args.jobname
     render_mode = args.render_mode
     timesteps = args.timesteps
-    cv_periods = db.get_cv_no_chunks(table_name)
+    cv_periods = 5
     logger.info(
         "Starting training with cv_periods=%s, timesteps=%s, ncpu=%s, jobname=%s",
         cv_periods,
@@ -65,8 +63,8 @@ if __name__ == "__main__":
             "MlpPolicy",
             env,
             policy_kwargs=policy_kwargs,
-            verbose=1,
-            batch_size=1,
+            verbose=0,
+            batch_size=1024,
             use_sde=True,
         )
         model_train.learn(total_timesteps=timesteps, progress_bar=True)
