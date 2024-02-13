@@ -20,7 +20,7 @@ from stable_baselines3 import SAC as model
 from stable_baselines3.common.vec_env import VecMonitor, DummyVecEnv
 from reactpy.backend.sanic import configure
 from sanic.log import logger
-from sanic import Request, json, Sanic
+from sanic import Request, json, Sanic, redirect
 
 from src import db
 from src.sanic_vec_env import SanicVecEnv
@@ -32,6 +32,81 @@ main_app.config["RESPONSE_TIMEOUT"] = 3600
 app_path = os.path.dirname(__file__)
 main_app.static("/static", os.path.join(app_path, "static"))
 log_dir = os.path.join(app_path, "log")
+
+@main_app.get("/train_cv_period")
+def train(request):
+    
+    args = request.args
+    previous_worker = args.get("previous_worker", None)
+    if previous_worker:
+        request.app.m.restart(previous_worker)
+    table_name = args.get("table_name")
+    i = int(args.get("i"), 0)
+    max_i = int(args.get("max_i"))
+    ncpu = int(args.get("ncpu", 64))
+    render_mode = args.get("render_mode", None)
+    network_depth = int(args.get("network_depth", 2))
+    timesteps = int(args.get("timesteps", 1000))
+    train_freq = int(args.get("train_freq", 1))
+    batch_size = int(args.get("batch_size", 1024))
+    use_sde = int(args.get("use_sde", 0))
+    device = args.get("device", "auto")
+    progress_bar = int(args.get("progress_bar", 1))
+    jobname = args.get("jobname", "TEST")
+    cv_periods = args.get("cv_periods", 5)
+    logger.info("Training on fold 0 of %i", cv_periods)
+    main_app.shared_ctx.hallpass.acquire()
+    env_fn = partial(Trader, table_name, i, test=True, render_mode=render_mode)
+    env_fns = [env_fn for _ in range(ncpu)]
+    env = SanicVecEnv(env_fns, request.app, jobname)  # type: ignore
+    main_app.shared_ctx.hallpass.release()
+    env = VecMonitor(env, log_dir)
+    network_width = []
+    for i in range(network_depth):
+        network_width.append(int(request.args.get(f"network_width_{i}", 4096)))
+    network = {
+        "pi": network_width,
+        "vf": network_width,
+        "qf": network_width,
+    }
+    policy_kwargs = {
+        "net_arch": network,
+    }
+    model_train = model(
+        "MlpPolicy",
+        env,
+        policy_kwargs=policy_kwargs,
+        verbose=0,
+        batch_size=batch_size,
+        use_sde=use_sde,
+        device=device,
+        tensorboard_log=log_dir,
+        train_freq=train_freq,
+    )
+    model_train.learn(total_timesteps=timesteps, progress_bar=progress_bar)
+    model_train.save(f"model_{i}")
+    env.close()
+    redirect_continue = (
+        f"/train_cv_period?table_name={table_name}"
+        f"&i={i+1}"
+        f"&max_i={max_i}"
+        f"&ncpu={ncpu}"
+        f"&render_mode={render_mode}"
+        f"&policy_kwargs={policy_kwargs}"
+        f"&timesteps={timesteps}"
+        f"&train_freq={train_freq}"
+        f"&batch_size={batch_size}"
+        f"&use_sde={use_sde}"
+        f"&device={device}"
+        f"&progress_bar={progress_bar}"
+        f"&jobname={jobname}"
+        f"&previous_worker={request.app.m.name}"
+    )
+    redirect_end = f"/finished_training?jobname={jobname}"
+    if i < max_i:
+        return redirect(redirect_continue)
+    else:
+        return redirect(redirect_end)
 
 
 @main_app.main_process_start
@@ -210,101 +285,44 @@ def start_handler(request: Request):
     args = request.args
     logger.info("Starting training")
     table_name = args.get("table_name")
-    start_date = args.get("train_start_date")
-    ncpu = int(args.get("ncpu", 1))
     jobname = args.get("jobname", "default")
-    render_mode = args.get("render_mode", None)
-    network_depth = int(args.get("network_depth", 4))
-    batch_size = int(args.get("batch_size", 1024))
-    progress_bar = bool(int(args.get("progress_bar", 1)))
-    use_sde = bool(int(args.get("use_sde", 0)))
-    device = args.get("device", "auto")
-    train_freq = int(args.get("train_freq", 1))
-    network_width = []
-    for i in range(network_depth):
-        network_width.append(int(request.args.get(f"network_width_{i}", 4096)))
-    network = {
-        "pi": network_width,
-        "vf": network_width,
-        "qf": network_width,
-    }
-    logger.info("Network architecture: %s", network)
-    assert network is not None
-    assert isinstance(network, dict)
+    cv_periods = args.get("cv_periods", 5)
     db.add_job(jobname)
-    timesteps = int(request.args.get("timesteps", 1000))
-    cv_periods = 5
     logger.info(
-        "Starting training with cv_periods=%s and train_start_date=%s",
+        "Starting training for %s with cv_periods=%s" ,
+        table_name,
         cv_periods,
-        start_date,
     )
-    for i in range(0, cv_periods - 1):
-        logger.info("Training on fold %i of %i", i, cv_periods)
-        env_fn = partial(Trader, table_name, i, test=True, render_mode=render_mode)
-        request.app.shared_ctx.hallpass.acquire()
-        logger.info("Acquired hallpass")
-        try:
-            env_fns = [env_fn for _ in range(ncpu)]
-            env = SanicVecEnv(env_fns, request.app, jobname)  # type: ignore
-            env = VecMonitor(env, log_dir)
-        except MemoryError as e:
-            logger.error("Out of memory error creating environment")
-            logger.error(e)
-            return json({"status": "error"})
-        finally:
-            request.app.shared_ctx.hallpass.release()
-            logger.info("Released hallpass")
-        policy_kwargs = {
-            "net_arch": network,
-        }
-        model_train = model(
-            "MlpPolicy",
-            env,
-            policy_kwargs=policy_kwargs,
-            verbose=0,
-            batch_size=batch_size,
-            use_sde=use_sde,
-            device=device,
-            tensorboard_log=log_dir,
-            train_freq=train_freq,
-        )
-        model_train.learn(total_timesteps=timesteps, progress_bar=progress_bar)
-        model_train.save(f"model_{i}")
-        env.close()
-        env_test = Trader(table_name, i + 1, test=True, render_mode=render_mode)
-        model_handle = f"model_{i}"
-        model_test = model.load(model_handle, env=env_test)
-        vec_env = model_test.get_env()
-        try:
-            assert isinstance(vec_env, DummyVecEnv)
-        except AssertionError:
-            logger.error("Error loading environment")
-            return json({"status": "error"})
-        obs = vec_env.reset()
-        lstm_states = None
-        num_envs = 1
-        episode_starts = np.ones((num_envs,), dtype=bool)
-        while True:
-            action, lstm_states = model_test.predict(
-                #  We ignore the type error here because the type hint for obs
-                #  is not correct
-                obs,  # type: ignore
-                state=lstm_states,
-                episode_start=episode_starts,
-            )
-            obs, _, done, _ = vec_env.step(action)
-            if done:
-                break
-        test_render_handle = f"test_render_{i}.csv"
-        env_test.render_df.to_csv(test_render_handle)
-    return json(
-        {
-            "status": "success",
-            "model_name": model_handle,
-            "test_render": test_render_handle,
-        }
-    )
+    # env_test = Trader(table_name, i + 1, test=True, render_mode=render_mode)
+    # model_handle = f"model_{i}"
+    # model_test = model.load(model_handle, env=env_test)
+    # vec_env = model_test.get_env()
+    # try:
+    #     assert isinstance(vec_env, DummyVecEnv)
+    # except AssertionError:
+    #     logger.error("Error loading environment")
+    #     return json({"status": "error"})
+    # obs = vec_env.reset()
+    # lstm_states = None
+    # num_envs = 1
+    # episode_starts = np.ones((num_envs,), dtype=bool)
+    # while True:
+    #     action, lstm_states = model_test.predict(
+    #         #  We ignore the type error here because the type hint for obs
+    #         #  is not correct
+    #         obs,  # type: ignore
+    #         state=lstm_states,
+    #         episode_start=episode_starts,
+    #     )
+    #     obs, _, done, _ = vec_env.step(action)
+    #     if done:
+    #         break
+    # test_render_handle = f"test_render_{i}.csv"
+    # env_test.render_df.to_csv(test_render_handle)
+    request_str = request.url
+    redirect_str = request_str.replace("start", "train_cv_period")
+    redirect_str += f"&i=0&max_i={cv_periods-1}&jobname={jobname}"
+    return redirect(redirect_str)
 
 
 @main_app.get("/stop")
