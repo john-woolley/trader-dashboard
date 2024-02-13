@@ -423,6 +423,7 @@ def chunk_raw_table(
         list: The list of chunks.
     """
     df = get_raw_table(table_name)
+    df = df.sort("date", "ticker")
     if not no_chunks:
         chunks = chunk_df_by_size(df, chunk_size)
     else:
@@ -591,6 +592,7 @@ def standardize_cv_columns(table_name: str, chunk: int) -> None:
     preserved_cols = ["open", "high", "low", "close", "closeadj"]
     numerical_cols = [col for col in df.columns if col not in preserved_cols and df[col].dtype.is_numeric()]
     df = df.with_columns((pl.col(col).sub(std_df[col].mean())).truediv(std_df[col].std()).alias(col) for col in numerical_cols)
+    df = df.sort("date", "ticker")
     blob = cloudpickle.dumps(df)
     insert_standardized_cv_data(table_name, chunk, blob)
 
@@ -787,7 +789,7 @@ if __name__ == "__main__":
     add_worker("worker2", "test")
     print(get_workers_by_name("test"))
     print(get_workers_by_id(1))
-    test_df = pl.read_csv("trader-dashboard/data/master.csv").drop("").sort("date", "ticker")
+    test_df = pl.read_csv("trader-dashboard/data/master.csv", try_parse_dates=True).drop("").sort("date", "ticker")
     insert_raw_table(test_df, "test_table")
     print(get_raw_table("test_table"))
     chunk_raw_table("test_table", 240)
