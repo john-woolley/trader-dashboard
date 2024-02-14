@@ -2,6 +2,11 @@
 trader-dashboard
 #############################
 
+
+.. image:: https://private-user-images.githubusercontent.com/53134776/304773434-b15ee1ea-cf39-4754-a645-a15604fc6faa.png
+    :alt: trader-dashboard
+
+
 .. start-badges
 
 .. list-table::
