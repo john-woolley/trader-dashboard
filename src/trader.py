@@ -1,45 +1,45 @@
-# Description: Delta hedging environment for Soft Actor Critic (SAC) RL model
-
 """
-This module contains the implementation of the Trader class, which represents
-the delta hedging environment for the Soft Actor Critic (SAC) RL model. The
-Trader class is a subclass of the gym.Env class from the gymnasium library.
+Stock picker environemnt for Soft Actor Critic (SAC) RL model
 
-The Trader environment simulates a trading environment where an agent can
-perform buy and sell actions on a set of assets. The environment provides
-observations of the current state, which include lagged observations of asset
-prices and other market indicators. The agent's goal is to maximize its
-portfolio value by making optimal trading decisions.
+This module defines the Trader class, which represents an environment for the
+stock picker model. The environemnt contains price and fundamental data for
+a particular industry as well as macroeconomic data. The environment is used to
+train a Soft Actor Critic (SAC) RL model to make trading decisions based on the
+observed data.
 
-The Trader class provides methods for initializing the environment, resetting
-it to its initial state, and executing trades. It also calculates various
-metrics such as portfolio value, position weights, and rewards. The class
-implements the gym.Env interface, which allows it to be used with reinforcement
-learning algorithms.
+The environment is implemented using the gym library, which is
+a toolkit for developing and comparing reinforcement learning algorithms.
+The Trader class inherits from the gym.Env class and implements the necessary
+methods required by the gym library for creating custom environments.
 
+The observation space is a 2D array of shape (n_lags, stock_features * n 
++ macro_features), where n is the number of stocks and n_lags is the number of
+lagged observations to include in the state buffer.
+
+The action space is a 1D array of shape (n + 2), where n is the number of stocks.
+The two additional elements in the action space are the gross short and long
+leverage targets.
+
+The stock picker uses a concept of a model portfolio to make trading decisions.
+The model portfolio is a 1D array of shape (n), where n is the number of stocks.
+The model portfolio represents the desired portfolio weights for each stock.
+The difference between the model portfolio and the actual portfolio is used to
+determine the trading actions up to the specified leverage limits and subject
+to a turnover constraint.
+
+The reward is calculated based using the risk-adjusted return of the portfolio.
+The risk aversion parameter is used to adjust the reward based on the risk that
+models a trader's subjective risk preference.
+
+The calculation is based on the following formula:
+reward = yeojohnson((return - risk_free_rate) / volatility, risk_aversion)
+
+ 
 Example usage:
-
-# Create a Trader environment
-data = load_data()  # Load market data
-trader = Trader(data)
-
-# Reset the environment
-observation, info = trader.reset()
-
-# Execute a trade
-amount = 1000  # Trade amount
-sign = 1  # Buy
-underlying = 0  # Index of the underlying asset
-trader._trade(amount, sign, underlying)
-
-# Get the current portfolio value
-portfolio_value = trader.current_portfolio_value
-
-# Get the position weights
-position_weights = trader.net_position_weights
-
-# Get the reward for the current step
-reward = trader._get_reward()
+    env = Trader(table_name='stock_data', chunk=0, initial_balance=100000)
+    observation, info = env.reset()
+    action = env.action_space.sample()
+    next_observation, reward, done, info = env.step(action)
 
 """
 
@@ -79,26 +79,23 @@ def get_percentile(val, m, axis=0):
     return (m > val).argmax(axis) / m.shape[axis]
 
 
-class Trader(gym.Env):
+def get_dt_expr(dates: np.ndarray) -> pl.Expr:
     """
-    The Trader class represents an environment for trading simulation.
+    Get a polars expression for a date column.
 
     Parameters:
-    - data (dict[pd.DataFrame]): A dictionary of pandas DataFrames
-        containing the data for each asset.
-    - initial_balance (float): The initial balance of the trader.
-        Default is 100000.
-    - n_lags (int): The number of lagged observations to include in the
-        state. Default is 10.
-    - transaction_cost (float): The transaction cost as a percentage of
-        the traded amount. Default is 0.0025.
-    - ep_length (int): The length of each episode in trading steps.
-        Default is 252.
-    - test (bool): Whether the environment is in test mode or not.
-        Default is False.
-    - risk_aversion (float): The risk aversion parameter for calculating
-        the reward. Default is 0.9.
-    - render_mode (str): The rendering mode for visualization. Default is None.
+    dates (np.ndarray): The input array of dates.
+
+    Returns:
+    pl.Expr: The polars expression for the date column.
+
+    """
+    return dates.cast(pl.Date)
+
+
+class Trader(gym.Env):
+    """
+    The Trader class represents an environment for the stock picker model.
     """
 
     def __init__(
@@ -117,29 +114,32 @@ class Trader(gym.Env):
         Initializes the Trader environment.
 
         Parameters:
-        - data (dict[pd.DataFrame]): A dictionary of pandas DataFrames
-          containing the data for each asset.
+        - table_name (str): The name of the table containing the data.
+        - chunk (int): The chunk number for the data.
         - initial_balance (float): The initial balance of the trader.
-          Default is 100000.
+            Default is 100000.
         - n_lags (int): The number of lagged observations to include in the
-          state. Default is 10.
+            state. Default is 10.
         - transaction_cost (float): The transaction cost as a percentage of
-          the traded amount. Default is 0.0025.
+            the traded amount. Default is 0.0025.
         - ep_length (int): The length of each episode in trading steps.
-          Default is 252.
+            Default is 252.
         - test (bool): Whether the environment is in test mode or not.
-          Default is False.
+            Default is False.
+        - risk_aversion (float): The risk aversion parameter for calculating
+            the reward. Default is 0.9.
+        - render_mode (str): The rendering mode for visualization. Default is None.
         """
         super().__init__()
         self.render_mode = render_mode
         self.risk_aversion = risk_aversion
-        self.data = db.read_std_cv_table(table_name, chunk)
+        self.data = db.read_std_cv_table(table_name, chunk).sort("date")
         self.data = self.data.with_columns(
             pl.col("capex").truediv(pl.col("equity")).alias("capexratio"),
-            pl.col("closeadj").alias("spot")
+            pl.col("closeadj").alias("spot"),
         )
-        self.dates = self.data.select("date").unique().collect().to_numpy().flatten()
-        self.symbols = self.data.select("ticker").unique().collect().to_numpy().flatten()
+        self.dates = self.data.select("date").unique().collect()
+        self.symbols = self.data.select("ticker").unique().collect()
         self.no_symbols = len(self.symbols)
         self.test = test
         self.ep_length = ep_length
@@ -252,7 +252,8 @@ class Trader(gym.Env):
         Returns:
             str: The current date.
         """
-        return self.dates[self.current_index]
+        item = self.dates[self.current_index].item()
+        return pl.datetime(item.year, item.month, item.day)
 
     @property
     def model_portfolio_value(self):
@@ -297,7 +298,14 @@ class Trader(gym.Env):
             self.period = 0
         else:
             self.period = random.randint(0, len(self.dates) - self.ep_length)  # nosec
-        self.spot = self.data.select("spot", "date").filter(pl.col("date") == self.dates[self.period + self.current_step]).drop("date").collect().to_numpy().flatten()
+        self.spot = (
+            self.data.select("spot", "date")
+            .filter(pl.col("date") == self.current_date)
+            .drop("date")
+            .collect()
+            .to_numpy()
+            .flatten()
+        )
         self.balance = self.initial_balance
         self.log_ret = 0
         self.state_buffer = deque([], self.buffer_len)
@@ -318,22 +326,48 @@ class Trader(gym.Env):
         p = self.period
         s = self.current_step
         macro_len = len(macro_cols)
-        curr_date = self.dates[p + s]
+        curr_date = self.current_date
         if self.current_step < self.buffer_len:
-            prev_dates = self.dates[p: p + s + 1]
+            prev_dates = get_dt_expr(self.dates[p : p + s + 1])
         else:
-            prev_dates = self.dates[p + s - self.buffer_len: p + s + 1]
-        spot = self.data.select("spot", "date").filter(pl.col("date") == curr_date).drop("date").collect().to_numpy().flatten()
+            prev_dates = get_dt_expr(self.dates[p + s - self.buffer_len : p + s + 1])
+        spot = (
+            self.data.select("spot", "date")
+            .filter(pl.col("date") == curr_date)
+            .drop("date")
+            .collect()
+            .to_numpy()
+            .flatten()
+        )
         self.spot = spot
-        spot_window = self.data.select("spot", "date", "ticker").filter(pl.col("date").is_in(prev_dates)).drop("date", "ticker").collect().to_numpy().reshape(self.no_symbols, -1)
+        spot_window = (
+            self.data.select("spot", "date", "ticker")
+            .filter(pl.col("date").is_in(prev_dates))
+            .drop("date", "ticker")
+            .collect()
+            .to_numpy()
+            .reshape(self.no_symbols, -1)
+        )
         log_spot_window = np.log(spot_window)
         if self.current_step > 0:
             spot_returns = spot_returns = np.diff(log_spot_window, axis=1)[:, -1]
         else:
             spot_returns = np.zeros(self.no_symbols)
         spot_rank = get_percentile(spot, spot_window, axis=1)
-        macro_state = self.data.select(macro_cols+["date"]).filter(pl.col("date") == curr_date).drop("date").collect().to_numpy()
-        slices = self.data.select(used_cols+["date"]).filter(pl.col("date") == curr_date).drop("date").collect().to_numpy()
+        macro_state = (
+            self.data.select(macro_cols + ["date"])
+            .filter(pl.col("date") == curr_date)
+            .drop("date")
+            .collect()
+            .to_numpy()
+        )
+        slices = (
+            self.data.select(used_cols + ["date"])
+            .filter(pl.col("date") == curr_date)
+            .drop("date")
+            .collect()
+            .to_numpy()
+        )
         stock_state = np.concatenate(slices)
         stock_state = np.concatenate([stock_state, spot_rank, spot_returns])
         macro_state = np.concatenate(macro_state)[slice(None, None, macro_len)]
@@ -517,7 +551,7 @@ class Trader(gym.Env):
         if mode == "human":
             output = (
                 f"Step:{self.current_step}, "
-                f"Date: {self.dates[self.current_index]}, "
+                f"Date: {pl.select(self.current_date.cast(pl.String)).item()}, "
                 f"Market Value: {self.current_portfolio_value:.2f}, "
                 f"Balance: {self.balance:.2f}, "
                 f"Stock Owned: {self.total_net_position_value:.2f}, "
@@ -529,17 +563,18 @@ class Trader(gym.Env):
             pass
 
         state_dict = {
-            "Date": [self.dates[self.current_index]],
+            "Date": [pl.select(self.current_date.cast(pl.String)).item()],
             "market_value": [self.current_portfolio_value],
             "balance": [self.balance],
             "paid_slippage": [self.paid_slippage],
         }
         net_lev_dict = {
-            f"leverage_{self.symbols[i]}": self.net_position_values[i]
+            f"leverage_{self.symbols[i].item()}": self.net_position_values[i]
             for i in range(self.no_symbols)
         }
         action_dict = {
-            f"action_{self.symbols[i]}": self.action[i] for i in range(self.no_symbols)
+            f"action_{self.symbols[i].item()}": self.action[i]
+            for i in range(self.no_symbols)
         }
         state_dict.update(net_lev_dict)
         state_dict.update(action_dict)

@@ -402,7 +402,8 @@ def chunk_df_by_size(df: pl.LazyFrame, chunk_size: int) -> list:
         df.filter(
             pl.col("date").is_in(
                 unique_dates.slice(i * chunk_size, (i + 1) * chunk_size)
-        ))
+            )
+        )
         for i in range(num_chunks)
     ]
     return chunks
@@ -588,10 +589,19 @@ def standardize_cv_columns(table_name: str, chunk: int) -> None:
     if chunk == 0:
         std_df = read_chunked_table(table_name, 0).collect()
     else:
-        std_df = pl.concat([read_chunked_table(table_name, i) for i in range(chunk)]).collect()
+        std_df = pl.concat(
+            [read_chunked_table(table_name, i) for i in range(chunk)]
+        ).collect()
     preserved_cols = ["open", "high", "low", "close", "closeadj"]
-    numerical_cols = [col for col in df.columns if col not in preserved_cols and df[col].dtype.is_numeric()]
-    df = df.with_columns((pl.col(col).sub(std_df[col].mean())).truediv(std_df[col].std()).alias(col) for col in numerical_cols)
+    numerical_cols = [
+        col
+        for col in df.columns
+        if col not in preserved_cols and df[col].dtype.is_numeric()
+    ]
+    df = df.with_columns(
+        (pl.col(col).sub(std_df[col].mean())).truediv(std_df[col].std()).alias(col)
+        for col in numerical_cols
+    )
     df = df.sort("date", "ticker")
     blob = cloudpickle.dumps(df)
     insert_standardized_cv_data(table_name, chunk, blob)
@@ -777,30 +787,30 @@ def read_std_cv_table(table_name: str, chunk: int) -> pl.LazyFrame:
 
 
 if __name__ == "__main__":
-    drop_workers_table()
-    drop_jobs_table()
-    drop_cv_data_table()
-    drop_std_cv_data_table()
-    create_jobs_table()
-    create_workers_table()
-    create_cv_data_table()
-    add_job("test")
-    add_worker("worker1", "test")
-    add_worker("worker2", "test")
-    print(get_workers_by_name("test"))
-    print(get_workers_by_id(1))
-    test_df = pl.read_csv("trader-dashboard/data/master.csv", try_parse_dates=True).drop("").sort("date", "ticker")
-    insert_raw_table(test_df, "test_table")
-    print(get_raw_table("test_table"))
-    chunk_raw_table("test_table", 240)
-    print(read_chunked_table("test_table", 0))
-    print(get_names_in_cv_table())
-    create_std_cv_table()
-    standardize_cv_columns("test_table", 0)
-    standardize_cv_columns("test_table", 1)
-    standardize_cv_columns("test_table", 2)
-    standardize_cv_columns("test_table", 3)
-    standardize_cv_columns("test_table", 4)
+    # drop_workers_table()
+    # drop_jobs_table()
+    # drop_cv_data_table()
+    # drop_std_cv_data_table()
+    # create_jobs_table()
+    # create_workers_table()
+    # create_cv_data_table()
+    # add_job("test")
+    # add_worker("worker1", "test")
+    # add_worker("worker2", "test")
+    # print(get_workers_by_name("test"))
+    # print(get_workers_by_id(1))
+    # test_df = pl.read_csv("trader-dashboard/data/master.csv", try_parse_dates=True).drop("").sort("date", "ticker")
+    # insert_raw_table(test_df, "test_table")
+    # print(get_raw_table("test_table"))
+    # chunk_raw_table("test_table", 240)
+    # print(read_chunked_table("test_table", 0))
+    # print(get_names_in_cv_table())
+    # create_std_cv_table()
+    # standardize_cv_columns("test_table", 0)
+    # standardize_cv_columns("test_table", 1)
+    # standardize_cv_columns("test_table", 2)
+    # standardize_cv_columns("test_table", 3)
+    # standardize_cv_columns("test_table", 4)
     print(read_std_cv_table("test_table", 0).collect())
-    remove_table_name_from_cv_table("test_table")
-    print(get_cv_no_chunks("test_table"))
+    # remove_table_name_from_cv_table("test_table")
+    # print(get_cv_no_chunks("test_table"))

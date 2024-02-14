@@ -23,7 +23,7 @@ if __name__ == "__main__":
     parser.add_argument("--table_name", type=str, required=True)
     parser.add_argument("--ncpu", type=int, default=1)
     parser.add_argument("--jobname", type=str, default="default")
-    parser.add_argument("--render_mode", type=str, default="none")
+    parser.add_argument("--render_mode", type=str, default="human")
     parser.add_argument("--timesteps", type=int, default=1000)
     args = parser.parse_args()
 
@@ -54,9 +54,9 @@ if __name__ == "__main__":
             logger.error(e)
         policy_kwargs = {
             "net_arch": {
-                "pi": [4096, 2048, 1024, 1024],
-                "vf": [4096, 2048, 1024, 1024],
-                "qf": [4096, 2048, 1024, 1024],
+                "pi": [4096, 2048, 1024],
+                "vf": [4096, 2048, 1024],
+                "qf": [4096, 2048, 1024],
             }
         }
         model_train = SAC(
@@ -64,7 +64,7 @@ if __name__ == "__main__":
             env,
             policy_kwargs=policy_kwargs,
             verbose=0,
-            batch_size=1024,
+            batch_size=512,
             use_sde=True,
         )
         model_train.learn(total_timesteps=timesteps, progress_bar=True)
