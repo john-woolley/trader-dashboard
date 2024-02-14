@@ -53,6 +53,13 @@ Milestones
 - [.] Create a backend API 
 - [ ] Create a ReactPy front-end
 
+***********
+Screenshots
+***********
+
+.. image:: https://github.com/john-woolley/trader-dashboard/assets/53134776/1bf27317-2c14-4979-8734-08047370849f
+
+
 ********
 Features
 ********
