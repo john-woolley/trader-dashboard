@@ -39,7 +39,19 @@ Reinforcement Learning Dashboard with Sanic and ReactPy
 Introduction
 ************
 
+NOTE: This project is an actively developed work in progress.  If you are seeing this, please know that it is not yet ready for use.  Please check back later.
+
 This project aims to create a dashboard for reinforcement learning in trading using Sanic and ReactPy. It provides a user-friendly interface for training, monitoring and analyzing trading strategies.
+
+
+**********
+Milestones
+**********
+
+- [x] Create reinforcement training environment for asset allocation
+- [x] Create a Sanic server
+- [.] Create a backend API 
+- [ ] Create a ReactPy front-end
 
 ********
 Features
@@ -55,6 +67,20 @@ Installation
 ************
 
 To install and run the dashboard, follow these steps.
+
+^^^^^^^^^^^^^^^^^^^^^^
+1. Install PostgresSQL
+^^^^^^^^^^^^^^^^^^^^^^
+
+.. code:: bash
+
+    sudo apt-get update
+    sudo apt-get install postgresql postgresql-contrib
+
+    # or on Fedora
+
+    sudo dnf install postgresql-server postgresql-contrib
+
 
 ^^^^^^^^^^^^^^^^^^^^^^^
 1. Clone the repository
