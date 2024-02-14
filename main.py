@@ -99,7 +99,7 @@ def train_cv_period(request):
     env_fns = [env_fn for _ in range(ncpu)]
     env = SanicVecEnv(env_fns, request.app, jobname)  # type: ignore
     main_app.shared_ctx.hallpass.release()
-    env = VecMonitor(env, log_dir)
+    env = VecMonitor(env, log_dir+f"/monitor/{jobname}")  # type: ignore
     network_width = []
     for j in range(network_depth):
         network_width.append(int(request.args.get(f"network_width_{j}", 4096)))
@@ -119,7 +119,7 @@ def train_cv_period(request):
         batch_size=batch_size,
         use_sde=use_sde,
         device=device,
-        tensorboard_log=log_dir,
+        tensorboard_log=log_dir+f"/tensorboard/{jobname}",
         train_freq=train_freq,
     )
     model_train.learn(total_timesteps=timesteps, progress_bar=progress_bar)
