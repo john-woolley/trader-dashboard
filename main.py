@@ -9,16 +9,16 @@ the application.
 Train and validate are mutually recursive functions that train and validate
 the model on a specific fold of the cross-validation period.
 
-The train function trains the model on a specific fold of the cross-validation
-period, while the validate function validates the model on a specific fold
-of the cross-validation period.
+The `train_cv_period` function trains the model on a specific fold of the 
+cross-validation period, while the `validate_cv_period` function validates the
+model on the subsequent fold of the cross-validation period.
 
-The train function takes a request object containing the training parameters
+`train_cv_period` takes a request object containing the training parameters
 and returns a continuation of the validation process.
 
-The validate function takes a request object containing the validation parameters
-and returns a continuation of the training process.
-
+`validate_cv_period` function takes a request object containing the validation
+parameters and returns a continuation of the training process or finishes the
+process and  returns a response indicating the status of the operation.
 """
 import multiprocessing as mp
 import os
@@ -28,7 +28,7 @@ from functools import partial
 import reactpy
 import sanic
 import numpy as np
-import pandas as pd
+import polars as pl
 
 from stable_baselines3 import SAC as model
 from stable_baselines3.common.vec_env import VecMonitor, DummyVecEnv
@@ -128,7 +128,7 @@ def train_cv_period(request):
     redirect_continue = request.app.url_for(
         "validate_cv_period",
         i=i,
-        max_i=cv_periods-1,
+        max_i=cv_periods - 1,
         table_name=table_name,
         jobname=jobname,
         render_mode=render_mode,
@@ -142,8 +142,8 @@ def train_cv_period(request):
         train_freq=train_freq,
         timesteps=timesteps,
         network_depth=network_depth,
-        network_width=network_width
-        )
+        network_width=network_width,
+    )
     return redirect(redirect_continue)
 
 
@@ -160,14 +160,14 @@ def validate_cv_period(request: Request):
     """
     args = request.args
     previous_worker = args.get("previous_worker", "null")
-    if previous_worker:
+    if previous_worker != "null":
         request.app.m.restart(previous_worker)
-    table_name = request.args.get("table_name")
-    render_mode = request.args.get("render_mode", "human")
-    jobname = request.args.get("jobname", "default")
-    max_i = int(request.args.get("max_i"), 5)
-    i = int(request.args.get("i", 0))
-    ncpu = int(request.args.get("ncpu", 64))
+    table_name = args.get("table_name")
+    render_mode = args.get("render_mode", "human")
+    jobname = args.get("jobname", "default")
+    max_i = int(args.get("max_i"), 5)
+    i = int(args.get("i", 0))
+    ncpu = int(args.get("ncpu", 64))
     render_mode = args.get("render_mode", None)
     network_depth = int(args.get("network_depth", 2))
     timesteps = int(args.get("timesteps", 1000))
@@ -224,7 +224,7 @@ def validate_cv_period(request: Request):
         train_freq=train_freq,
         timesteps=timesteps,
         network_depth=network_depth,
-        network_width=network_width
+        network_width=network_width,
     )
     redirect_end = f"/finished_training?jobname={jobname}"
     if i < max_i:
@@ -261,7 +261,7 @@ async def main_process_start(app):
     logger.debug("Created new workers table")
 
 
-@main_app.get("/upload_csv")
+@main_app.post("/upload_csv")
 def upload_csv(request: Request):
     """
     Uploads a CSV file, saves it to a specified output path,
@@ -274,21 +274,21 @@ def upload_csv(request: Request):
     Returns:
         dict: A dictionary with the status of the upload process.
     """
-
-    input_path = request.args.get("file")
+    if not request.files:
+        return json({"status": "error"})
+    input_file = request.files.get("file")
+    if not input_file:
+        return json({"status": "error"})
+    if input_file.type != "text/csv":
+        return json({"status": "error"})
     output_path = request.args.get("output")
     parse_dates = bool(int(request.args.get("parse_dates", 0)))
-    index_col = request.args.get("index_col")
-    with open(input_path, "r", encoding="utf-8") as f:
-        input_file = f.read()
-    if not output_path:
-        output_path = input_path.split("/")[-1].split(".")[0]
     file_path = os.path.join(app_path, "data", output_path)
-    logger.info("Uploading %s to %s", input_path, file_path)
+    logger.info("Uploading %s to %s", input_file.name, file_path)
     with open(file_path, "w", encoding="utf-8") as f:
-        f.write(input_file)
-    logger.info("Uploaded %s to %s", input_path, file_path)
-    df = pd.read_csv(file_path, parse_dates=parse_dates, index_col=index_col)
+        f.write(input_file.body.decode("utf-8"))   
+    logger.info("Uploaded %s to %s", input_file.name, file_path)
+    df = pl.read_csv(file_path, try_parse_dates=parse_dates)
     db.insert_raw_table(df, output_path)
     logger.info("Inserted %s into database as raw table", output_path)
     return json({"status": "success"})
@@ -474,4 +474,4 @@ def react_app():
 configure(main_app, react_app)
 
 if __name__ == "__main__":
-    main_app.run(host="0.0.0.0", port=8000, debug=True, workers=16)
+    main_app.run(host="0.0.0.0", port=8000, debug=True, workers=64)
