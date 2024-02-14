@@ -3,7 +3,7 @@ trader-dashboard
 #############################
 
 
-.. image:: https://private-user-images.githubusercontent.com/53134776/304773434-b15ee1ea-cf39-4754-a645-a15604fc6faa.png
+.. image:: https://github.com/john-woolley/trader-dashboard/assets/53134776/d0ba45c3-ddff-4cb6-a6b8-9cb8c1b3b4b5
     :alt: trader-dashboard
 
 
