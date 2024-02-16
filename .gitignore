@@ -7,3 +7,4 @@ src/UNKNOWN.egg-info/
 src/__pycache__/
 events.outs.tfevents.*
 log/SAC*
+events.out.tfevents.*

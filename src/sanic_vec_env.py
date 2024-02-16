@@ -36,7 +36,7 @@ import numpy as np
 from gymnasium import spaces
 from hashlib import md5
 from random import uniform
-from src.db import add_worker
+from src.db import Workers, Jobs
 
 from stable_baselines3.common.vec_env.base_vec_env import (
     CloudpickleWrapper,
@@ -46,6 +46,7 @@ from stable_baselines3.common.vec_env.base_vec_env import (
     VecEnvStepReturn,
 )
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
+from stable_baselines3.common.vec_env import SubprocVecEnv
 
 
 def _worker(
@@ -165,7 +166,7 @@ class SanicVecEnv(VecEnv):
                 workers=1,
                 restartable=True,
             )
-            add_worker(worker_name, jobname)
+            Workers.add(worker_name, jobname)
         self.remotes[0].send(("get_spaces", None))
         observation_space, action_space = self.remotes[0].recv()
 

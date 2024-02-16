@@ -43,7 +43,7 @@ if __name__ == "__main__":
     )
     for i in range(0, cv_periods - 1):
         logger.info("Training on fold %i of %i", i, cv_periods)
-        env_fn = partial(Trader, table_name, i, test=True, render_mode=render_mode)
+        env_fn = partial(T rader, table_name, i, test=True, render_mode=render_mode)
         logger.info("Acquired hallpass")
         try:
             env_fns = [env_fn for _ in range(ncpu)]

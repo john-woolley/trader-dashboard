@@ -32,6 +32,7 @@ import os
 import gc
 
 from functools import partial
+from typing import Type
 
 import reactpy
 import sanic
@@ -185,7 +186,6 @@ async def train_cv_period(request):
         use_sde=use_sde,
         device=device,
         tensorboard_log=log_dir+f"/tensorboard/{jobname}",
-        train_freq=train_freq,
     )
     try:
         model_train.learn(total_timesteps=timesteps, progress_bar=progress_bar)
@@ -253,6 +253,7 @@ def validate_cv_period(request: Request):
     cv_periods = int(args.get("cv_periods", 5))
     network_width = args.get("network_width", [4096, 2048, 1024])
     model_name = args.get("model_name", "ppo")
+    model: Type[PPO] | Type[SAC] = PPO if model_name == "ppo" else SAC
     logger.info("Validating on fold %i of %i", i + 1, cv_periods)
     env_test = Trader(table_name, i + 1, test=True, render_mode=render_mode)
     model_handle = f"model_{i}"

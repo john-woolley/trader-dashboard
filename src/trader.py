@@ -97,7 +97,6 @@ class Trader(gym.Env):
     """
     The Trader class represents an environment for the stock picker model.
     """
-
     def __init__(
         self,
         table_name: str,
@@ -109,7 +108,7 @@ class Trader(gym.Env):
         test=False,
         risk_aversion=0.9,
         render_mode=None,
-    ):
+    ) -> None:
         """
         Initializes the Trader environment.
 
@@ -159,7 +158,7 @@ class Trader(gym.Env):
         self.transaction_cost = transaction_cost
         self.current_step = 0
         self.buffer_len = n_lags
-        self.render_df = pd.DataFrame()
+        self.render_df = pl.LazyFrame()
         self.balance = self.initial_balance
         self.net_leverage = np.zeros(self.no_symbols)
         self.model_portfolio = np.zeros(self.no_symbols)
@@ -206,14 +205,7 @@ class Trader(gym.Env):
         Returns:
         np.ndarray: The position value.
         """
-        try:
-            assert isinstance(self.spot, np.ndarray)
-            return self.net_leverage * self.spot
-        except Exception as e:
-            print(self.dates[self.current_index])
-            print(self.spot)
-            print(self.net_leverage)
-            raise e
+        return self.net_leverage * self.spot
 
     @property
     def total_net_position_value(self):
@@ -223,7 +215,6 @@ class Trader(gym.Env):
         Returns:
         float: The hedge value.
         """
-        assert isinstance(self.spot, np.ndarray)
         return np.dot(self.net_leverage, self.spot)
 
     @property
@@ -234,7 +225,6 @@ class Trader(gym.Env):
         Returns:
         float: The gross hedge value.
         """
-        assert isinstance(self.spot, np.ndarray)
         return np.dot(np.abs(self.net_leverage), self.spot)
 
     @property
@@ -391,7 +381,6 @@ class Trader(gym.Env):
         Returns:
         None
         """
-        assert isinstance(self.spot, np.ndarray)
         paid_slippage = amount * self.spot[underlying] * self.transaction_cost
         self.net_leverage[underlying] += amount * sign
         self.balance -= amount * sign * self.spot[underlying] + paid_slippage
@@ -416,9 +405,7 @@ class Trader(gym.Env):
         Returns:
         float: The return volatility.
         """
-        assert isinstance(self.return_series, np.ndarray)
         std = np.std(self.return_series) if len(self.return_series) > 0 else 0.05
-        assert isinstance(std, float)
         return std
 
     def _get_reward(self) -> np.ndarray:
@@ -579,5 +566,5 @@ class Trader(gym.Env):
         state_dict.update(net_lev_dict)
         state_dict.update(action_dict)
 
-        step_df = pd.DataFrame.from_dict(state_dict)
-        self.render_df = pd.concat([self.render_df, step_df], ignore_index=True)
+        step_df = pl.LazyFrame(state_dict)
+        self.render_df = pl.concat([self.render_df, step_df])
