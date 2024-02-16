@@ -1,4 +1,4 @@
-# Description: Main file for the trader dashboard
+# Description: Main file for the trader dashboard application.
 """
 This file contains the main code for the trader dashboard application.
 It sets up the Sanic server, handles requests for uploading CSV files,
@@ -8,6 +8,13 @@ the application.
 
 Train and validate are mutually recursive functions that train and validate
 the model on a specific fold of the cross-validation period.
+
+The `start_handler` function handles the start request for training and returns
+a JSON response indicating the status of the training process, the model name,
+and the test render file name.
+
+The `stop_handler` function stops the training for a specific job and returns a
+response indicating the status of the operation.
 
 The `train_cv_period` function trains the model on a specific fold of the 
 cross-validation period, while the `validate_cv_period` function validates the
@@ -22,6 +29,7 @@ process and  returns a response indicating the status of the operation.
 """
 import multiprocessing as mp
 import os
+import gc
 
 from functools import partial
 
@@ -29,8 +37,9 @@ import reactpy
 import sanic
 import numpy as np
 import polars as pl
-
-from stable_baselines3 import SAC as model
+import torch
+ 
+from stable_baselines3 import SAC, PPO
 from stable_baselines3.common.vec_env import VecMonitor, DummyVecEnv
 from reactpy.backend.sanic import configure
 from sanic.log import logger
@@ -39,6 +48,7 @@ from sanic import Request, json, Sanic, redirect
 from src import db
 from src.sanic_vec_env import SanicVecEnv
 from src.trader import Trader
+from src.render_gfx import get_rewards_curve_figure
 
 CONN = "postgresql+psycopg2://trader_dashboard@0.0.0.0:5432/trader_dashboard"
 main_app = Sanic(__name__)
@@ -48,8 +58,51 @@ main_app.static("/static", os.path.join(app_path, "static"))
 log_dir = os.path.join(app_path, "log")
 
 
+
+@main_app.get("/start")
+def start_handler(request: Request):
+    """
+    Handles the start request for training.
+
+    Args:
+        request (Request): The request object containing the run parameters.
+
+    Returns:
+        JSON response indicating the status of the training process,
+        the model name, and the test render file name.
+    """
+    args = request.args
+    logger.info("Starting training")
+    table_name = args.get("table_name")
+    jobname = args.get("jobname", "default")
+    cv_periods = int(args.get("cv_periods", 5))
+    timesteps = int(args.get("timesteps", 1000))
+    db.Jobs.add(jobname)
+    logger.info(
+        "Starting training for %s with cv_periods=%s",
+        table_name,
+        cv_periods,
+    )
+    network_depth = int(args.get("network_depth", 4))
+    network_width = []
+    for j in range(network_depth):
+        depth_j = int(args.get(f"network_width_{j}", 4096))
+        network_width.append(depth_j)
+    redirect_train = request.app.url_for(
+        "train_cv_period",
+        table_name=table_name,
+        jobname=jobname,
+        cv_periods=cv_periods,
+        network_width=network_width,
+        max_i=cv_periods - 1,
+        i=0,
+        timesteps=timesteps,
+    )
+    return redirect(redirect_train)
+
+
 @main_app.get("/finished_training")
-def finished_training(request: Request):
+async def finished_training(request: Request):
     """
     Handles the finished training request.
 
@@ -59,13 +112,19 @@ def finished_training(request: Request):
     Returns:
         dict: A dictionary containing the status of the operation.
     """
-    jobname = request.args.get("jobname", "default")
+    args = request.args
+    jobname = args.get("jobname", "default")
+    previous_worker = args.get("previous_worker", "null")
+    if previous_worker != "null":
+        request.app.m.restart(previous_worker)
+        logger.info("Error training for job: %s", jobname)
+        return json({"status": "error"})
     logger.info("Finished training for job: %s", jobname)
     return json({"status": "success"})
 
 
 @main_app.get("/train_cv_period")
-def train_cv_period(request):
+async def train_cv_period(request):
     """
     Train the model on a specific fold of the cross-validation period.
 
@@ -84,25 +143,31 @@ def train_cv_period(request):
     i = int(args.get("i"), 0)
     ncpu = int(args.get("ncpu", 64))
     render_mode = args.get("render_mode", None)
-    network_depth = int(args.get("network_depth", 2))
+    network_depth = int(args.get("network_depth", 4))
     timesteps = int(args.get("timesteps", 1000))
     train_freq = int(args.get("train_freq", 1))
     batch_size = int(args.get("batch_size", 1024))
-    use_sde = int(args.get("use_sde", 0))
+    use_sde = bool(args.get("use_sde", 0))
     device = args.get("device", "auto")
-    progress_bar = int(args.get("progress_bar", 1))
-    jobname = args.get("jobname", "TEST")
+    progress_bar = bool(args.get("progress_bar", 1))
+    jobname = args.get("jobname", "default")
     cv_periods = int(args.get("cv_periods", 5))
+    network_width = args.get("network_width", [4096, 2048, 1024])
+    model_name = args.get("model_name", "ppo")
+    model = PPO if model_name == "ppo" else SAC
     logger.info("Training on fold %i of %i", i, cv_periods)
-    main_app.shared_ctx.hallpass.acquire()
-    env_fn = partial(Trader, table_name, i, test=True, render_mode=render_mode)
-    env_fns = [env_fn for _ in range(ncpu)]
-    env = SanicVecEnv(env_fns, request.app, jobname)  # type: ignore
-    main_app.shared_ctx.hallpass.release()
-    env = VecMonitor(env, log_dir+f"/monitor/{jobname}")  # type: ignore
+    request.app.shared_ctx.hallpass.acquire()
+    try:
+        env_fn = partial(Trader, table_name, i, test=True, render_mode=render_mode)
+        env_fns = [env_fn for _ in range(ncpu)]
+        env = SanicVecEnv(env_fns, request.app, jobname)  # type: ignore
+    except torch.cuda.OutOfMemoryError:
+        logger.error("Error creating environment")
+        return redirect(f"/finished_training?jobname={jobname}")
+    finally:
+        request.app.shared_ctx.hallpass.release()
+    env = VecMonitor(env, log_dir+f"/monitor/{jobname}") 
     network_width = []
-    for j in range(network_depth):
-        network_width.append(int(request.args.get(f"network_width_{j}", 4096)))
     network = {
         "pi": network_width,
         "vf": network_width,
@@ -115,15 +180,22 @@ def train_cv_period(request):
         "MlpPolicy",
         env,
         policy_kwargs=policy_kwargs,
-        verbose=0,
+        verbose=1,
         batch_size=batch_size,
         use_sde=use_sde,
         device=device,
         tensorboard_log=log_dir+f"/tensorboard/{jobname}",
         train_freq=train_freq,
     )
-    model_train.learn(total_timesteps=timesteps, progress_bar=progress_bar)
-    model_train.save(f"model_{i}")
+    try:
+        model_train.learn(total_timesteps=timesteps, progress_bar=progress_bar)
+        model_train.save(f"model_{i}")
+        del model_train
+        gc.collect()
+        torch.cuda.empty_cache()
+    except KeyboardInterrupt:
+        logger.error("Training interrupted")
+        return redirect(f"/finished_training?jobname={jobname}?status=error")
     env.close()
     redirect_continue = request.app.url_for(
         "validate_cv_period",
@@ -143,6 +215,7 @@ def train_cv_period(request):
         timesteps=timesteps,
         network_depth=network_depth,
         network_width=network_width,
+        model_name=model_name,
     )
     return redirect(redirect_continue)
 
@@ -169,16 +242,17 @@ def validate_cv_period(request: Request):
     i = int(args.get("i", 0))
     ncpu = int(args.get("ncpu", 64))
     render_mode = args.get("render_mode", None)
-    network_depth = int(args.get("network_depth", 2))
+    network_depth = int(args.get("network_depth", 3))
     timesteps = int(args.get("timesteps", 1000))
     train_freq = int(args.get("train_freq", 1))
     batch_size = int(args.get("batch_size", 1024))
-    use_sde = int(args.get("use_sde", 0))
+    use_sde = bool(args.get("use_sde", 0))
     device = args.get("device", "auto")
-    progress_bar = int(args.get("progress_bar", 1))
+    progress_bar = bool(args.get("progress_bar", 1))
     jobname = args.get("jobname", "TEST")
     cv_periods = int(args.get("cv_periods", 5))
     network_width = args.get("network_width", [4096, 2048, 1024])
+    model_name = args.get("model_name", "ppo")
     logger.info("Validating on fold %i of %i", i + 1, cv_periods)
     env_test = Trader(table_name, i + 1, test=True, render_mode=render_mode)
     model_handle = f"model_{i}"
@@ -205,7 +279,10 @@ def validate_cv_period(request: Request):
         if done:
             break
     test_render_handle = f"test_render_{i+1}.csv"
-    env_test.render_df.to_csv(test_render_handle)
+    env_test.render_df.collect().write_csv(test_render_handle)
+    del model_test
+    gc.collect()
+    torch.cuda.empty_cache()
     i += 1
     redirect_continue = request.app.url_for(
         "train_cv_period",
@@ -225,6 +302,7 @@ def validate_cv_period(request: Request):
         timesteps=timesteps,
         network_depth=network_depth,
         network_width=network_width,
+        model_name=model_name,
     )
     redirect_end = f"/finished_training?jobname={jobname}"
     if i < max_i:
@@ -250,19 +328,37 @@ async def main_process_start(app):
     app.shared_ctx.mp_ctx = mp.get_context("spawn")
     logger.debug("Created shared context")
     app.shared_ctx.hallpass = mp.Semaphore()
+    app.shared_ctx.hallpass.acquire()
     logger.debug("Created hallpass")
-    db.drop_workers_table()
+    db.Workers.drop()
     logger.debug("Dropped old workers table")
-    db.drop_jobs_table()
+    db.Jobs.drop()
     logger.debug("Dropped old jobs table")
-    db.create_jobs_table()
+    db.Jobs.create()
     logger.debug("Created new jobs table")
-    db.create_workers_table()
+    db.Workers.create()
     logger.debug("Created new workers table")
 
 
+@main_app.main_process_ready
+async def main_process_ready(app):
+    """
+    Logs the main process as ready.
+
+    Args:
+        app: The Sanic application object.
+
+    Returns:
+        None
+    """
+    app.shared_ctx.hallpass.release()
+    logger.debug("Main process ready")
+    
+
+
+
 @main_app.post("/upload_csv")
-def upload_csv(request: Request):
+async def upload_csv(request: Request):
     """
     Uploads a CSV file, saves it to a specified output path,
     and inserts its contents into a database as a raw table.
@@ -289,7 +385,7 @@ def upload_csv(request: Request):
         f.write(input_file.body.decode("utf-8"))   
     logger.info("Uploaded %s to %s", input_file.name, file_path)
     df = pl.read_csv(file_path, try_parse_dates=parse_dates)
-    db.insert_raw_table(df, output_path)
+    db.RawData.insert(df, output_path)
     logger.info("Inserted %s into database as raw table", output_path)
     return json({"status": "success"})
 
@@ -388,39 +484,13 @@ def prepare_data(request: Request):
     no_chunks = int(request.args.get("no_chunks", 0))
     chunk_size = int(request.args.get("chunk_size", 1000))
     if not no_chunks:
-        db.create_chunked_table(table_name, chunk_size=chunk_size)
+        db.Chunk.create_chunked_table(table_name, chunk_size=chunk_size)
     else:
-        db.create_chunked_table(table_name, no_chunks=no_chunks)
+        db.Chunk.create_chunked_table(table_name, no_chunks=no_chunks)
     return json({"status": "success"})
 
 
-@main_app.get("/start")
-def start_handler(request: Request):
-    """
-    Handles the start request for training.
 
-    Args:
-        request (Request): The request object containing the run parameters.
-
-    Returns:
-        JSON response indicating the status of the training process,
-        the model name, and the test render file name.
-    """
-    args = request.args
-    logger.info("Starting training")
-    table_name = args.get("table_name")
-    jobname = args.get("jobname", "default")
-    cv_periods = args.get("cv_periods", 5)
-    db.add_job(jobname)
-    logger.info(
-        "Starting training for %s with cv_periods=%s",
-        table_name,
-        cv_periods,
-    )
-    request_str = request.url
-    redirect_str = request_str.replace("start", "train_cv_period")
-    redirect_str += f"&i=0&max_i={cv_periods-1}&jobname={jobname}"
-    return redirect(redirect_str)
 
 
 @main_app.get("/stop")
@@ -439,7 +509,7 @@ def stop_handler(request: Request):
     request.app.shared_ctx.hallpass.acquire()
     logger.info("Acquired hallpass")
     try:
-        workers = db.get_workers_by_name(jobname)
+        workers = db.Workers.get_workers_by_name(jobname)
         request.app.m.terminate_worker(workers)
     except sanic.SanicException as e:
         logger.error("Error stopping workers")
@@ -468,10 +538,10 @@ def react_app():
     """
     This function returns a React app.
     """
-    return reactpy.html.div({}, button())
+    return reactpy.html.div(get_rewards_curve_figure(log_dir+'/monitor'), button())
 
 
 configure(main_app, react_app)
 
 if __name__ == "__main__":
-    main_app.run(host="0.0.0.0", port=8000, debug=True, workers=64)
+    main_app.run(host="0.0.0.0", port=8001, debug=True, workers=64)
