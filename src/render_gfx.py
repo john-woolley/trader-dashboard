@@ -5,8 +5,6 @@ Functions:
 - moving_average(values: np.ndarray, window: int) -> np.ndarray:
   Smooths values by doing a moving average.
 """
-
-from bokeh.plotting import figure, show
 import numpy as np
 from stable_baselines3.common.monitor import load_results
 from stable_baselines3.common.results_plotter import ts2xy

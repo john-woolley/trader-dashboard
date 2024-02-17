@@ -43,7 +43,7 @@ if __name__ == "__main__":
     )
     for i in range(0, cv_periods - 1):
         logger.info("Training on fold %i of %i", i, cv_periods)
-        env_fn = partial(T rader, table_name, i, test=True, render_mode=render_mode)
+        env_fn = partial(Trader, table_name, i, test=True, render_mode=render_mode)
         logger.info("Acquired hallpass")
         try:
             env_fns = [env_fn for _ in range(ncpu)]
@@ -66,6 +66,7 @@ if __name__ == "__main__":
             verbose=0,
             batch_size=512,
             use_sde=True,
+            device="cuda",
         )
         model_train.learn(total_timesteps=timesteps, progress_bar=True)
         model_train.save(f"model_{i}")
@@ -90,4 +91,4 @@ if __name__ == "__main__":
             if done:
                 break
         test_render_handle = f"test_render_{i}.csv"
-        env_test.render_df.to_csv(test_render_handle)
+        env_test.get_render().to_csv(test_render_handle)

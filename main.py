@@ -39,7 +39,7 @@ import sanic
 import numpy as np
 import polars as pl
 import torch
- 
+
 from stable_baselines3 import SAC, PPO
 from stable_baselines3.common.vec_env import VecMonitor, DummyVecEnv
 from reactpy.backend.sanic import configure
@@ -52,12 +52,12 @@ from src.trader import Trader
 from src.render_gfx import get_rewards_curve_figure
 
 CONN = "postgresql+psycopg2://trader_dashboard@0.0.0.0:5432/trader_dashboard"
+Sanic.start_method = "fork"
 main_app = Sanic(__name__)
 main_app.config["RESPONSE_TIMEOUT"] = 3600
 app_path = os.path.dirname(__file__)
 main_app.static("/static", os.path.join(app_path, "static"))
 log_dir = os.path.join(app_path, "log")
-
 
 
 @main_app.get("/start")
@@ -78,6 +78,8 @@ def start_handler(request: Request):
     jobname = args.get("jobname", "default")
     cv_periods = int(args.get("cv_periods", 5))
     timesteps = int(args.get("timesteps", 1000))
+    ncpu = int(args.get("ncpu", 64))
+    model_name = args.get("model_name", "ppo")
     db.Jobs.add(jobname)
     logger.info(
         "Starting training for %s with cv_periods=%s",
@@ -98,6 +100,8 @@ def start_handler(request: Request):
         max_i=cv_periods - 1,
         i=0,
         timesteps=timesteps,
+        ncpu=ncpu,
+        model_name=model_name,
     )
     return redirect(redirect_train)
 
@@ -167,7 +171,7 @@ async def train_cv_period(request):
         return redirect(f"/finished_training?jobname={jobname}")
     finally:
         request.app.shared_ctx.hallpass.release()
-    env = VecMonitor(env, log_dir+f"/monitor/{jobname}") 
+    env = VecMonitor(env, log_dir + f"/monitor/{jobname}")
     network_width = []
     network = {
         "pi": network_width,
@@ -185,7 +189,7 @@ async def train_cv_period(request):
         batch_size=batch_size,
         use_sde=use_sde,
         device=device,
-        tensorboard_log=log_dir+f"/tensorboard/{jobname}",
+        tensorboard_log=log_dir + f"/tensorboard/{jobname}",
     )
     try:
         model_train.learn(total_timesteps=timesteps, progress_bar=progress_bar)
@@ -280,7 +284,7 @@ def validate_cv_period(request: Request):
         if done:
             break
     test_render_handle = f"test_render_{i+1}.csv"
-    env_test.render_df.collect().write_csv(test_render_handle)
+    env_test.get_render().to_csv(test_render_handle)
     del model_test
     gc.collect()
     torch.cuda.empty_cache()
@@ -326,7 +330,7 @@ async def main_process_start(app):
     sanic_ver = sanic.__version__
     logger.info("Created server process running Sanic Version %s", sanic_ver)
     logger.debug("Main process started")
-    app.shared_ctx.mp_ctx = mp.get_context("spawn")
+    app.shared_ctx.mp_ctx = mp.get_context("forkserver")
     logger.debug("Created shared context")
     app.shared_ctx.hallpass = mp.Semaphore()
     app.shared_ctx.hallpass.acquire()
@@ -354,8 +358,6 @@ async def main_process_ready(app):
     """
     app.shared_ctx.hallpass.release()
     logger.debug("Main process ready")
-    
-
 
 
 @main_app.post("/upload_csv")
@@ -383,7 +385,7 @@ async def upload_csv(request: Request):
     file_path = os.path.join(app_path, "data", output_path)
     logger.info("Uploading %s to %s", input_file.name, file_path)
     with open(file_path, "w", encoding="utf-8") as f:
-        f.write(input_file.body.decode("utf-8"))   
+        f.write(input_file.body.decode("utf-8"))
     logger.info("Uploaded %s to %s", input_file.name, file_path)
     df = pl.read_csv(file_path, try_parse_dates=parse_dates)
     db.RawData.insert(df, output_path)
@@ -491,9 +493,6 @@ def prepare_data(request: Request):
     return json({"status": "success"})
 
 
-
-
-
 @main_app.get("/stop")
 def stop_handler(request: Request):
     """
@@ -539,7 +538,7 @@ def react_app():
     """
     This function returns a React app.
     """
-    return reactpy.html.div(get_rewards_curve_figure(log_dir+'/monitor'), button())
+    return reactpy.html.div(get_rewards_curve_figure(log_dir + "/monitor"), button())
 
 
 configure(main_app, react_app)

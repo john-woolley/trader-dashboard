@@ -45,7 +45,11 @@ class RawData:
         Returns:
             None
         """
-        df.write_database(table_name, CONN, if_table_exists="replace")
+        df.write_database(
+            table_name,
+            CONN,
+            if_table_exists="replace",
+        )
 
     @classmethod
     def get(cls, table_name: str) -> pl.LazyFrame:
@@ -218,7 +222,16 @@ class Workers:
     conn = sa.create_engine(CONN).connect()
     metadata = sa.MetaData()
     metadata.reflect(bind=conn)
-    jobs_table = sa.Table("jobs", metadata, autoload_with=conn)
+    try:
+        jobs_table = sa.Table("jobs", metadata, autoload_with=conn)
+    except sa.exc.NoSuchTableError:
+        jobs_table = sa.Table(
+            "jobs",
+            metadata,
+            sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+            sa.Column("name", sa.String),
+            sa.Column("status", sa.String),
+        )
     try:
         table = sa.Table("workers", metadata, autoload_with=conn)
     except sa.exc.NoSuchTableError:
@@ -791,6 +804,7 @@ if __name__ == "__main__":
     print(Workers.get_workers_by_id(1))
     test_df = (
         pl.read_csv("trader-dashboard/data/master.csv", try_parse_dates=True)
+        .with_columns(pl.col("date").cast(pl.Date).alias("date"))
         .drop("")
         .sort("date", "ticker")
     )

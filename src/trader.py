@@ -75,8 +75,8 @@ def get_percentile(val, m, axis=0):
     float: The percentile of the value in the array.
 
     """
-    val = val.reshape(-1, 1)
-    return (m > val).argmax(axis) / m.shape[axis]
+    val = val.reshape(1, -1)
+    return np.sum(m > val, axis=axis) / m.shape[axis]
 
 
 def get_dt_expr(dates: np.ndarray) -> pl.Expr:
@@ -97,6 +97,7 @@ class Trader(gym.Env):
     """
     The Trader class represents an environment for the stock picker model.
     """
+
     def __init__(
         self,
         table_name: str,
@@ -134,9 +135,10 @@ class Trader(gym.Env):
         self.risk_aversion = risk_aversion
         self.data = db.read_std_cv_table(table_name, chunk).sort("date")
         self.data = self.data.with_columns(
+            pl.col("date").cast(pl.Date).alias("date"),
             pl.col("capex").truediv(pl.col("equity")).alias("capexratio"),
             pl.col("closeadj").alias("spot"),
-        )
+        ).fill_nan(0.0)
         self.dates = self.data.select("date").unique().collect()
         self.symbols = self.data.select("ticker").unique().collect()
         self.no_symbols = len(self.symbols)
@@ -153,12 +155,13 @@ class Trader(gym.Env):
             shape=(self.no_symbols + 2,),
         )
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(n_lags, 17 * self.no_symbols + 43)
+            low=-np.inf, high=np.inf, shape=(n_lags, 17 * self.no_symbols + 39)
         )
         self.transaction_cost = transaction_cost
         self.current_step = 0
         self.buffer_len = n_lags
         self.render_df = pl.LazyFrame()
+        self.render_dict: Dict[int, Dict[str, Any]] = {}
         self.balance = self.initial_balance
         self.net_leverage = np.zeros(self.no_symbols)
         self.model_portfolio = np.zeros(self.no_symbols)
@@ -316,51 +319,29 @@ class Trader(gym.Env):
         p = self.period
         s = self.current_step
         macro_len = len(macro_cols)
-        curr_date = self.current_date
         if self.current_step < self.buffer_len:
             prev_dates = get_dt_expr(self.dates[p : p + s + 1])
         else:
             prev_dates = get_dt_expr(self.dates[p + s - self.buffer_len : p + s + 1])
-        spot = (
-            self.data.select("spot", "date")
-            .filter(pl.col("date") == curr_date)
-            .drop("date")
-            .collect()
-            .to_numpy()
-            .flatten()
-        )
-        self.spot = spot
         spot_window = (
-            self.data.select("spot", "date", "ticker")
+            self.data.select("spot", "date", "ticker", *used_cols + macro_cols)
             .filter(pl.col("date").is_in(prev_dates))
             .drop("date", "ticker")
             .collect()
             .to_numpy()
-            .reshape(self.no_symbols, -1)
+            .reshape(len(prev_dates), -1, len(used_cols) + len(macro_cols) + 1)
         )
-        log_spot_window = np.log(spot_window)
+        spot = spot_window[-1, :, 0].reshape(-1)
+        stock_state = spot_window[-1, :, 1:-macro_len].reshape(-1)
+        macro_state = spot_window[-1, -1, -macro_len:]
+        self.spot = spot
+        log_spot_window = np.log(spot_window[:, :, 0])
         if self.current_step > 0:
-            spot_returns = spot_returns = np.diff(log_spot_window, axis=1)[:, -1]
+            spot_returns = np.diff(log_spot_window, axis=0)[-1]
         else:
             spot_returns = np.zeros(self.no_symbols)
-        spot_rank = get_percentile(spot, spot_window, axis=1)
-        macro_state = (
-            self.data.select(macro_cols + ["date"])
-            .filter(pl.col("date") == curr_date)
-            .drop("date")
-            .collect()
-            .to_numpy()
-        )
-        slices = (
-            self.data.select(used_cols + ["date"])
-            .filter(pl.col("date") == curr_date)
-            .drop("date")
-            .collect()
-            .to_numpy()
-        )
-        stock_state = np.concatenate(slices)
+        spot_rank = get_percentile(spot, spot_window[:, :, 0], axis=0)
         stock_state = np.concatenate([stock_state, spot_rank, spot_returns])
-        macro_state = np.concatenate(macro_state)[slice(None, None, macro_len)]
         state = np.concatenate(
             [stock_state, self.net_position_weights, self.model_portfolio]
         )
@@ -521,7 +502,7 @@ class Trader(gym.Env):
             np.ndarray: The observation for the current step.
         """
         obs = np.array(self.state_buffer)
-        assert obs.shape == (self.buffer_len, 17 * self.no_symbols + 43)
+        assert obs.shape == (self.buffer_len, 17 * self.no_symbols + 39)
         return obs
 
     def render(self, mode: str = "human") -> None:
@@ -566,5 +547,13 @@ class Trader(gym.Env):
         state_dict.update(net_lev_dict)
         state_dict.update(action_dict)
 
-        step_df = pl.LazyFrame(state_dict)
-        self.render_df = pl.concat([self.render_df, step_df])
+        self.render_dict.update({self.current_step: state_dict})
+
+    def get_render(self) -> pd.DataFrame:
+        """
+        Get the render dataframe.
+
+        Returns:
+            pd.DataFrame: The render dataframe.
+        """
+        return pd.DataFrame(self.render_dict).T
