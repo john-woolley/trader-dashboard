@@ -55,7 +55,6 @@ import polars as pl
 from gymnasium import spaces
 from scipy.stats import yeojohnson
 from sanic.log import logger
-
 from src.ingestion import macro_cols, used_cols
 
 from src import db
@@ -531,10 +530,10 @@ class Trader(gym.Env):
             pass
 
         state_dict = {
-            "Date": [pl.select(self.current_date.cast(pl.String)).item()],
-            "market_value": [self.current_portfolio_value],
-            "balance": [self.balance],
-            "paid_slippage": [self.paid_slippage],
+            "Date": pl.select(self.current_date.cast(pl.String)).item(),
+            "market_value": self.current_portfolio_value,
+            "balance": self.balance,
+            "paid_slippage": self.paid_slippage,
         }
         net_lev_dict = {
             f"leverage_{self.symbols[i].item()}": self.net_position_values[i]

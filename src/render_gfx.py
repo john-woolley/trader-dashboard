@@ -44,9 +44,12 @@ def get_rewards_curve_figure(log_dir: str):
     fig = ApexChart(
         options={
             "chart": {"id": "smoothed-rewards-curve"},
-            "xaxis": {"category": smoothed_x.tolist()},
+            "xaxis": {"category": x.tolist()},
         },
-        series=smoothed_y.tolist(),
+        series=[
+                {"name": "rewards", "data": y.tolist()},
+                {"name": "rewards (smoothed)", "data": smoothed_y.tolist()},
+                ],
         chart_type="line",
         width=800,
         height=400,

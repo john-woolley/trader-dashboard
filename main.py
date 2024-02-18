@@ -80,6 +80,7 @@ def start_handler(request: Request):
     timesteps = int(args.get("timesteps", 1000))
     ncpu = int(args.get("ncpu", 64))
     model_name = args.get("model_name", "ppo")
+    i = int(args.get("i", 0))
     db.Jobs.add(jobname)
     logger.info(
         "Starting training for %s with cv_periods=%s",
@@ -98,7 +99,7 @@ def start_handler(request: Request):
         cv_periods=cv_periods,
         network_width=network_width,
         max_i=cv_periods - 1,
-        i=0,
+        i=i,
         timesteps=timesteps,
         ncpu=ncpu,
         model_name=model_name,
@@ -159,11 +160,19 @@ async def train_cv_period(request):
     cv_periods = int(args.get("cv_periods", 5))
     network_width = args.get("network_width", [4096, 2048, 1024])
     model_name = args.get("model_name", "ppo")
+    risk_aversion = float(args.get("risk_aversion", 0.9))
     model = PPO if model_name == "ppo" else SAC
     logger.info("Training on fold %i of %i", i, cv_periods)
     request.app.shared_ctx.hallpass.acquire()
     try:
-        env_fn = partial(Trader, table_name, i, test=True, render_mode=render_mode)
+        env_fn = partial(
+            Trader,
+            table_name,
+            i,
+            test=True,
+            render_mode=render_mode,
+            risk_aversion=risk_aversion,
+        )
         env_fns = [env_fn for _ in range(ncpu)]
         env = SanicVecEnv(env_fns, request.app, jobname)  # type: ignore
     except torch.cuda.OutOfMemoryError:
@@ -171,7 +180,7 @@ async def train_cv_period(request):
         return redirect(f"/finished_training?jobname={jobname}")
     finally:
         request.app.shared_ctx.hallpass.release()
-    env = VecMonitor(env, log_dir + f"/monitor/{jobname}")
+    env = VecMonitor(env, log_dir + f"/monitor/{jobname}/{i}/{i}")
     network_width = []
     network = {
         "pi": network_width,
@@ -257,6 +266,7 @@ def validate_cv_period(request: Request):
     cv_periods = int(args.get("cv_periods", 5))
     network_width = args.get("network_width", [4096, 2048, 1024])
     model_name = args.get("model_name", "ppo")
+    risk_aversion = float(args.get("risk_aversion", 0.9))
     model: Type[PPO] | Type[SAC] = PPO if model_name == "ppo" else SAC
     logger.info("Validating on fold %i of %i", i + 1, cv_periods)
     env_test = Trader(table_name, i + 1, test=True, render_mode=render_mode)
@@ -538,7 +548,7 @@ def react_app():
     """
     This function returns a React app.
     """
-    return reactpy.html.div(get_rewards_curve_figure(log_dir + "/monitor"), button())
+    return reactpy.html.div(get_rewards_curve_figure(log_dir + "/monitor/TEST/1"), button())
 
 
 configure(main_app, react_app)
