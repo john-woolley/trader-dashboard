@@ -47,9 +47,9 @@ def get_rewards_curve_figure(log_dir: str):
             "xaxis": {"category": x.tolist()},
         },
         series=[
-                {"name": "rewards", "data": y.tolist()},
-                {"name": "rewards (smoothed)", "data": smoothed_y.tolist()},
-                ],
+            {"name": "rewards", "data": y.tolist()},
+            {"name": "rewards (smoothed)", "data": smoothed_y.tolist()},
+        ],
         chart_type="line",
         width=800,
         height=400,

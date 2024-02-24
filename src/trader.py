@@ -12,7 +12,7 @@ a toolkit for developing and comparing reinforcement learning algorithms.
 The Trader class inherits from the gym.Env class and implements the necessary
 methods required by the gym library for creating custom environments.
 
-The observation space is a 2D array of shape (n_lags, stock_features * n 
+The observation space is a 2D array of shape (n_lags, stock_features * n
 + macro_features), where n is the number of stocks and n_lags is the number of
 lagged observations to include in the state buffer.
 
@@ -34,7 +34,7 @@ models a trader's subjective risk preference.
 The calculation is based on the following formula:
 reward = yeojohnson((return - risk_free_rate) / volatility, risk_aversion)
 
- 
+
 Example usage:
     env = Trader(table_name='stock_data', chunk=0, initial_balance=100000)
     observation, info = env.reset()
@@ -44,7 +44,8 @@ Example usage:
 """
 
 import random
-from typing import Tuple, Any, SupportsFloat, Dict
+from typing import Tuple, Any, SupportsFloat, Dict, Union
+
 from collections import deque
 
 import numpy as np
@@ -78,7 +79,7 @@ def get_percentile(val, m, axis=0):
     return np.sum(m > val, axis=axis) / m.shape[axis]
 
 
-def get_dt_expr(dates: np.ndarray) -> pl.Expr:
+def get_dt(dates: pl.Series) -> pl.Series:
     """
     Get a polars expression for a date column.
 
@@ -132,14 +133,14 @@ class Trader(gym.Env):
         super().__init__()
         self.render_mode = render_mode
         self.risk_aversion = risk_aversion
-        self.data = db.read_std_cv_table(table_name, chunk).sort("date")
+        self.data = db.StdCVData.read(table_name, chunk).sort("date")
         self.data = self.data.with_columns(
             pl.col("date").cast(pl.Date).alias("date"),
             pl.col("capex").truediv(pl.col("equity")).alias("capexratio"),
             pl.col("closeadj").alias("spot"),
         ).fill_nan(0.0)
-        self.dates = self.data.select("date").unique().collect()
-        self.symbols = self.data.select("ticker").unique().collect()
+        self.dates = self.data.select("date").unique().collect().to_series()
+        self.symbols = self.data.select("ticker").unique().collect().to_series()
         self.no_symbols = len(self.symbols)
         self.test = test
         self.ep_length = ep_length
@@ -154,13 +155,14 @@ class Trader(gym.Env):
             shape=(self.no_symbols + 2,),
         )
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(n_lags, 17 * self.no_symbols + 39)
+            low=-np.inf, high=np.inf, shape=(n_lags, 52 * self.no_symbols + 39)
         )
+        self.cov = np.eye(self.no_symbols)
         self.transaction_cost = transaction_cost
         self.current_step = 0
         self.buffer_len = n_lags
         self.render_df = pl.LazyFrame()
-        self.render_dict: Dict[int, Dict[str, Any]] = {}
+        self.render_dict: Dict[str, Dict[str, Any]] = {}
         self.balance = self.initial_balance
         self.net_leverage = np.zeros(self.no_symbols)
         self.model_portfolio = np.zeros(self.no_symbols)
@@ -244,8 +246,8 @@ class Trader(gym.Env):
         Returns:
             str: The current date.
         """
-        item = self.dates[self.current_index].item()
-        return pl.datetime(item.year, item.month, item.day)
+        item = self.dates[self.current_index]
+        return pl.select(pl.date(item.year, item.month, item.day)).item()
 
     @property
     def model_portfolio_value(self):
@@ -269,7 +271,7 @@ class Trader(gym.Env):
         scaled[longs] = scaled[longs] / sum_weight_long * self.long_leverage
         return scaled
 
-    def reset(self, seed=42):
+    def reset(self, seed=42, options=None) -> Tuple[Any, Dict[str, Any]]:
         """
         Resets the environment to its initial state.
 
@@ -281,6 +283,8 @@ class Trader(gym.Env):
         - observation (object): The initial observation of the environment.
         - info (dict): An empty dictionary.
         """
+        seed = random.seed(seed)  # nosec
+        self.cov = np.eye(self.no_symbols)
         self.vol_ests = np.array([0.1] * self.no_symbols)
         self.return_series = np.array([])
         self.var = 0
@@ -319,9 +323,9 @@ class Trader(gym.Env):
         s = self.current_step
         macro_len = len(macro_cols)
         if self.current_step < self.buffer_len:
-            prev_dates = get_dt_expr(self.dates[p : p + s + 1])
+            prev_dates = get_dt(self.dates[p : p + s + 1])
         else:
-            prev_dates = get_dt_expr(self.dates[p + s - self.buffer_len : p + s + 1])
+            prev_dates = get_dt(self.dates[p + s - self.buffer_len : p + s + 1])
         spot_window = (
             self.data.select("spot", "date", "ticker", *used_cols + macro_cols)
             .filter(pl.col("date").is_in(prev_dates))
@@ -331,7 +335,14 @@ class Trader(gym.Env):
             .reshape(len(prev_dates), -1, len(used_cols) + len(macro_cols) + 1)
         )
         spot = spot_window[-1, :, 0].reshape(-1)
+        if self.current_step > self.buffer_len:
+            covariance = np.corrcoef(spot_window[:, :, 0].T)[
+                np.triu_indices(self.no_symbols)
+            ]
+        else:
+            covariance = np.eye(self.no_symbols)[np.triu_indices(self.no_symbols)]
         stock_state = spot_window[-1, :, 1:-macro_len].reshape(-1)
+        stock_state = np.concatenate([stock_state, stock_state**2])
         macro_state = spot_window[-1, -1, -macro_len:]
         self.spot = spot
         log_spot_window = np.log(spot_window[:, :, 0])
@@ -340,7 +351,7 @@ class Trader(gym.Env):
         else:
             spot_returns = np.zeros(self.no_symbols)
         spot_rank = get_percentile(spot, spot_window[:, :, 0], axis=0)
-        stock_state = np.concatenate([stock_state, spot_rank, spot_returns])
+        stock_state = np.concatenate([stock_state, spot_rank, spot_returns, covariance])
         state = np.concatenate(
             [stock_state, self.net_position_weights, self.model_portfolio]
         )
@@ -378,7 +389,7 @@ class Trader(gym.Env):
             self.return_series = np.append(self.return_series, ret)
 
     @property
-    def return_volatility(self) -> float:
+    def return_volatility(self) -> Union[np.floating[Any], float]:
         """
         Calculates the return volatility.
 
@@ -501,7 +512,6 @@ class Trader(gym.Env):
             np.ndarray: The observation for the current step.
         """
         obs = np.array(self.state_buffer)
-        assert obs.shape == (self.buffer_len, 17 * self.no_symbols + 39)
         return obs
 
     def render(self, mode: str = "human") -> None:
@@ -518,7 +528,7 @@ class Trader(gym.Env):
         if mode == "human":
             output = (
                 f"Step:{self.current_step}, "
-                f"Date: {pl.select(self.current_date.cast(pl.String)).item()}, "
+                f"Date: {self.current_date}, "
                 f"Market Value: {self.current_portfolio_value:.2f}, "
                 f"Balance: {self.balance:.2f}, "
                 f"Stock Owned: {self.total_net_position_value:.2f}, "
@@ -530,29 +540,29 @@ class Trader(gym.Env):
             pass
 
         state_dict = {
-            "Date": pl.select(self.current_date.cast(pl.String)).item(),
+            "Date": self.current_date,
             "market_value": self.current_portfolio_value,
             "balance": self.balance,
             "paid_slippage": self.paid_slippage,
         }
         net_lev_dict = {
-            f"leverage_{self.symbols[i].item()}": self.net_position_values[i]
+            f"leverage_{self.symbols[i]}": self.net_position_values[i]
             for i in range(self.no_symbols)
         }
         action_dict = {
-            f"action_{self.symbols[i].item()}": self.action[i]
+            f"action_{self.symbols[i]}": self.action[i]
             for i in range(self.no_symbols)
         }
         state_dict.update(net_lev_dict)
         state_dict.update(action_dict)
 
-        self.render_dict.update({self.current_step: state_dict})
+        self.render_dict.update({str(self.current_step): state_dict})
 
-    def get_render(self) -> pd.DataFrame:
+    def get_render(self) -> pl.DataFrame:
         """
         Get the render dataframe.
 
         Returns:
             pd.DataFrame: The render dataframe.
         """
-        return pd.DataFrame(self.render_dict).T
+        return pl.from_dicts(list(self.render_dict.values()))

@@ -33,6 +33,7 @@ import gc
 
 from functools import partial
 from typing import Type
+from time import sleep
 
 import reactpy
 import sanic
@@ -44,7 +45,7 @@ from stable_baselines3 import SAC, PPO
 from stable_baselines3.common.vec_env import VecMonitor, DummyVecEnv
 from reactpy.backend.sanic import configure
 from sanic.log import logger
-from sanic import Request, json, Sanic, redirect
+from sanic import Request, json, Sanic, redirect, html
 
 from src import db
 from src.sanic_vec_env import SanicVecEnv
@@ -88,21 +89,23 @@ def start_handler(request: Request):
         cv_periods,
     )
     network_depth = int(args.get("network_depth", 4))
-    network_width = []
-    for j in range(network_depth):
-        depth_j = int(args.get(f"network_width_{j}", 4096))
-        network_width.append(depth_j)
+    kwargs = {
+        f"network_depth_{i}": int(args.get(f"network_depth_{i}", 4096))
+        for i in range(network_depth)
+    }
+
     redirect_train = request.app.url_for(
         "train_cv_period",
         table_name=table_name,
         jobname=jobname,
         cv_periods=cv_periods,
-        network_width=network_width,
         max_i=cv_periods - 1,
+        network_depth=network_depth,
         i=i,
         timesteps=timesteps,
         ncpu=ncpu,
         model_name=model_name,
+        **kwargs,
     )
     return redirect(redirect_train)
 
@@ -158,7 +161,11 @@ async def train_cv_period(request):
     progress_bar = bool(args.get("progress_bar", 1))
     jobname = args.get("jobname", "default")
     cv_periods = int(args.get("cv_periods", 5))
-    network_width = args.get("network_width", [4096, 2048, 1024])
+    network_depth = int(args.get("network_depth", 4))
+    network_width = []
+    for j in range(network_depth):
+        depth_j = int(args.get(f"network_width_{j}", 4096))
+        network_width.append(depth_j)
     model_name = args.get("model_name", "ppo")
     risk_aversion = float(args.get("risk_aversion", 0.9))
     model = PPO if model_name == "ppo" else SAC
@@ -181,7 +188,6 @@ async def train_cv_period(request):
     finally:
         request.app.shared_ctx.hallpass.release()
     env = VecMonitor(env, log_dir + f"/monitor/{jobname}/{i}/{i}")
-    network_width = []
     network = {
         "pi": network_width,
         "vf": network_width,
@@ -206,6 +212,7 @@ async def train_cv_period(request):
         del model_train
         gc.collect()
         torch.cuda.empty_cache()
+        sleep(5)
     except KeyboardInterrupt:
         logger.error("Training interrupted")
         return redirect(f"/finished_training?jobname={jobname}?status=error")
@@ -269,7 +276,13 @@ def validate_cv_period(request: Request):
     risk_aversion = float(args.get("risk_aversion", 0.9))
     model: Type[PPO] | Type[SAC] = PPO if model_name == "ppo" else SAC
     logger.info("Validating on fold %i of %i", i + 1, cv_periods)
-    env_test = Trader(table_name, i + 1, test=True, render_mode=render_mode)
+    env_test = Trader(
+        table_name,
+        i + 1,
+        test=True,
+        render_mode=render_mode,
+        risk_aversion=risk_aversion,
+    )
     model_handle = f"model_{i}"
     model_test = model.load(model_handle, env=env_test)
     vec_env = model_test.get_env()
@@ -293,11 +306,12 @@ def validate_cv_period(request: Request):
         obs, _, done, _ = vec_env.step(action)
         if done:
             break
-    test_render_handle = f"test_render_{i+1}.csv"
-    env_test.get_render().to_csv(test_render_handle)
+    render_data = env_test.get_render()
+    db.RenderData.add(jobname, render_data, i)
     del model_test
     gc.collect()
     torch.cuda.empty_cache()
+    sleep(5)
     i += 1
     redirect_continue = request.app.url_for(
         "train_cv_period",
@@ -445,8 +459,10 @@ def get_test_render(request: Request):
         dict: A dictionary containing the test render file.
     """
     jobname = request.args.get("jobname", "default")
-    test_render = db.get_test_render(jobname)
-    return json({"test_render": test_render})
+    chunk = request.args.get("chunk", 0)
+    test_render: pl.DataFrame = db.RenderData.read(jobname, chunk)
+    res = test_render.to_pandas().to_html()
+    return html(res)
 
 
 @main_app.get("/get_model")
@@ -548,10 +564,12 @@ def react_app():
     """
     This function returns a React app.
     """
-    return reactpy.html.div(get_rewards_curve_figure(log_dir + "/monitor/TEST/1"), button())
+    return reactpy.html.div(
+        get_rewards_curve_figure(log_dir + "/monitor/TEST/1"), button()
+    )
 
 
 configure(main_app, react_app)
 
 if __name__ == "__main__":
-    main_app.run(host="0.0.0.0", port=8001, debug=True, workers=64)
+    main_app.run(host="0.0.0.0", port=8002, debug=True, workers=8)

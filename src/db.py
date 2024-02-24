@@ -17,8 +17,6 @@ from sqlalchemy import create_engine, MetaData, Table, Column
 
 from sklearn.decomposition import PCA
 
-from ingestion import used_cols
-
 CONN = "postgresql+psycopg2://trader_dashboard@0.0.0.0:5432/trader_dashboard"
 
 
@@ -133,7 +131,7 @@ class RawData:
             chunk = df.filter(pl.col("date").is_in(dates[i : i + chunk_size]))
             chunks.append(chunk)
         return chunks
-    
+
     @classmethod
     def insert_chunked_table(cls, chunks: list, table_name: str) -> None:
         """
@@ -454,7 +452,7 @@ class CVData:
         res = cls.conn.execute(query).fetchall()
         names = list(map(lambda x: x[0], res))
         return names
-    
+
     @classmethod
     def read(cls, table_name: str, i: int) -> pl.LazyFrame:
         """
@@ -470,7 +468,7 @@ class CVData:
         blob = cls.get(table_name, i)
         df = cloudpickle.loads(blob)
         return df.lazy()
-    
+
     @classmethod
     def standardize(cls, table_name: str, chunk: int) -> None:
         """
@@ -532,7 +530,6 @@ class StdCVData:
         cls.table.create(cls.conn, checkfirst=True)
         cls.conn.commit()
 
-
     @classmethod
     def insert(cls, table_name: str, chunk: int, data: bytes) -> None:
         """
@@ -546,11 +543,7 @@ class StdCVData:
         Returns:
             None
         """
-        ins = cls.table.insert().values(
-            table_name=table_name,
-            data=data,
-            chunk=chunk
-        )
+        ins = cls.table.insert().values(table_name=table_name, data=data, chunk=chunk)
         cls.conn.execute(ins)
         cls.conn.commit()
 
@@ -580,7 +573,7 @@ class StdCVData:
         blob = cls.get(table_name, chunk)
         df = cloudpickle.loads(blob)
         return df.lazy()
-    
+
     @classmethod
     def get(cls, table_name: str, chunk: int) -> bytes:
         """
@@ -603,7 +596,7 @@ class StdCVData:
         assert fetched is not None, f"Data not found for {table_name} chunk {chunk}"
         res = fetched[0]
         return res
-    
+
     @classmethod
     def calculate_pca_weights(cls, table_name: str, chunk: int) -> bytes:
         """
@@ -616,16 +609,22 @@ class StdCVData:
         Returns:
             bytes: The PCA weights.
         """
-        cols = ['date', 'ticker', 'closeadj', 'volume']
-        df = cls.read(table_name, chunk).collect().select(cols).to_pandas()
-        df['momentum'] = df['closeadj'].pct_change().dropna() * df['volume']
-        pivot = df.pivot_table(index="date", columns="ticker", values="momentum").fillna(0)
-        pca = PCA()
+        if chunk == 0:
+            df = cls.read(table_name, 0).collect()
+        else:
+            df = pl.concat([cls.read(table_name, i) for i in range(chunk)]).collect()
+        df = df.to_pandas()
+        df["momentum"] = df["closeadj"].pct_change().dropna() * df["volume"]
+        pivot = df.pivot_table(
+            index="date", columns="ticker", values="momentum"
+        ).fillna(0)
+        pca = PCA(n_components=5)
         pca.fit(pivot)
-        weights = pca.components_[:, :5]
+        weights = pca.components_
         labeled = [f"PC{i}" for i in range(1, 6)]
-        weights = pd.DataFrame(weights, columns=pivot.columns, index=labeled)
-        blob = cloudpickle.dumps(weights)
+        weights_df = pd.DataFrame(weights, columns=pivot.columns, index=labeled)
+        weights_df = pl.DataFrame(weights_df.T.reset_index())
+        blob = cloudpickle.dumps(weights_df)
         PCAWeights.add(table_name, blob, chunk)
         return blob
 
@@ -720,9 +719,9 @@ class PCAWeights:
         assert fetched is not None, f"Data not found for {table_name} chunk {i}"
         res = fetched[0]
         return res
-    
+
     @classmethod
-    def read(cls, table_name: str, i: int) -> pl.LazyFrame:
+    def read(cls, table_name: str, i: int) -> pl.DataFrame:
         """
         Read a chunked table from the database.
 
@@ -735,9 +734,117 @@ class PCAWeights:
         """
         blob = cls.get(table_name, i)
         df = cloudpickle.loads(blob)
-        return df.lazy()
+        return df
     
 
+class RenderData:
+    conn = sa.create_engine(CONN).connect()
+    metadata = sa.MetaData()
+    metadata.reflect(bind=conn)
+    try:
+        table = sa.Table("render_data", metadata, autoload_with=conn)
+    except sa.exc.NoSuchTableError:
+        table = sa.Table(
+            "render_data",
+            metadata,
+            sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+            sa.Column("table_name", sa.String),
+            sa.Column("chunk", sa.Integer),
+            sa.Column("data", sa.LargeBinary),
+        )
+
+    @classmethod
+    def create(cls):
+        """
+        Create a table named 'render_data' in the database with the specified columns.
+
+        The table will have the following columns:
+        - id: Integer, primary key, auto-incremented
+        - table_name: String
+        - chunk: Integer
+        - data: LargeBinary
+
+        This function uses SQLAlchemy to create the table and commits the changes
+        to the database.
+
+        Returns:
+        None
+        """
+        cls.table.create(cls.conn, checkfirst=True)
+        cls.conn.commit()
+
+    @classmethod
+    def add(cls, table_name: str, data: pl.DataFrame, i: int) -> None:
+        """
+        Add render data to the specified table.
+
+        Args:
+            table_name (str): The name of the table to add the data to.
+            data (bytes): The render data to be added.
+            i (int): The chunk index of the data.
+
+        Returns:
+        None
+        """
+        blob = cloudpickle.dumps(data)
+        ins = cls.table.insert().values(table_name=table_name, data=blob, chunk=i)
+        cls.conn.execute(ins)
+        cls.conn.commit()
+
+    @classmethod
+    def drop(cls):
+        """
+        Drops the 'render_data' table from the database.
+
+        This function connects to the database, retrieves the 'render_data' table,
+        and drops it.
+        If the table does not exist, it does nothing.
+        """
+        cls.table.drop(cls.conn, checkfirst=True)
+        cls.conn.commit()
+
+    @classmethod
+    def get(cls, table_name: str, i: int) -> bytes:
+        """
+        Retrieve render data by table name and chunk index.
+
+        Args:
+            table_name (str): The name of the table.
+            i (int): The chunk index.
+
+        Returns:
+            bytes: The render data.
+
+        Raises:
+            AssertionError
+        """
+        table = cls.table
+        query = (
+            sa.select(table.c.data)
+            .where(table.c.table_name == table_name)
+            .where(table.c.chunk == i)
+        )
+        fetched = cls.conn.execute(query).fetchone()
+        assert fetched is not None, f"Data not found for {table_name} chunk {i}"
+        res = fetched[0]
+        return res
+    
+    @classmethod
+    def read(cls, table_name: str, i: int) -> pl.DataFrame:
+        """
+        Read a chunked table from the database.
+
+        Args:
+            table_name (str): The name of the table.
+            i (int): The index of the chunk.
+
+        Returns:
+            pd.DataFrame: The chunked table as a pandas DataFrame.
+        """
+        blob = cls.get(table_name, i)
+        df = cloudpickle.loads(blob)
+        return df
+    
 
 
 
@@ -843,8 +950,6 @@ def get_cv_no_chunks(table_name: str):
     return len(res)
 
 
-
-
 if __name__ == "__main__":
     # Workers.drop()
     # Jobs.drop()
@@ -875,12 +980,18 @@ if __name__ == "__main__":
     # CVData.standardize("test_table", 2)
     # CVData.standardize("test_table", 3)
     # CVData.standardize("test_table", 4)
-    print(StdCVData.read("test_table", 0).collect())
-    print(StdCVData.read("test_table", 1).collect())
-    print(StdCVData.read("test_table", 2).collect())
-    print(StdCVData.read("test_table", 3).collect())
-    print(StdCVData.read("test_table", 4).collect())
-    PCAWeights.create()
-    StdCVData.calculate_pca_weights("test_table", 0)
+    # PCAWeights.drop()
+    # print(StdCVData.read("test_table", 0).collect())
+    # print(StdCVData.read("test_table", 1).collect())
+    # print(StdCVData.read("test_table", 2).collect())
+    # print(StdCVData.read("test_table", 3).collect())
+    # print(StdCVData.read("test_table", 4).collect())
+    # PCAWeights.create()
+    # StdCVData.calculate_pca_weights("test_table", 0)
+    # StdCVData.calculate_pca_weights("test_table", 1)
+    # StdCVData.calculate_pca_weights("test_table", 2)
+    # StdCVData.calculate_pca_weights("test_table", 3)
+    # StdCVData.calculate_pca_weights("test_table", 4)
+    RenderData.create()
     # remove_table_name_from_cv_table("test_table")
     # print(get_cv_no_chunks("test_table"))
