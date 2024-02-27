@@ -3,7 +3,8 @@ stable_baselines3
 scipy
 matplotlib
 reactpy[sanic]
-sqlalchemy
+sqlalchemy[asyncio]
+asyncpg
 psycopg2-binary
 pyfredapi
 pytest
@@ -11,7 +12,7 @@ ruff
 coverage
 tox
 pylint
-torch==2.1.2
+torch
 polars
 reactpy_apexcharts
 tensorboard

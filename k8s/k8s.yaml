@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+   name: bb-demo
+   namespace: default
+   labels:
+      app: bb-demo
+spec:
+   replicas: 1
+   selector:
+      matchLabels:
+         bb: web
+   template:
+      metadata:
+         labels:
+            bb: web
+      spec:
+         containers:
+            - name: bb-site
+              image: johwo84/trader-dashboard
+              imagePullPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+   name: bb-entrypoint
+   namespace: default
+spec:
+   type: NodePort
+   selector:
+      bb: web
+   ports:
+      - port: 8004
+        targetPort: 8004
+        nodePort: 30001

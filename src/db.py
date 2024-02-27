@@ -4,21 +4,23 @@ the context of a trader dashboard application.
 It provides functions for creating tables, inserting data,
 retrieving data, and managing jobs and workers.
 """
-
+import asyncio
 import sqlalchemy as sa
-import psycopg2
-import pandas as pd
+# import psycopg2
+import asyncpg
 import polars as pl
 import polars.selectors as cs
 import cloudpickle
 
 from sqlalchemy.sql import update
-from sqlalchemy import create_engine, MetaData, Table, Column
+from sqlalchemy import MetaData, Table
 
-from sklearn.decomposition import PCA
+from sqlalchemy.ext.asyncio import create_async_engine
 
-CONN = "postgresql+psycopg2://trader_dashboard@0.0.0.0:5432/trader_dashboard"
 
+
+CONN = f"postgresql+asyncpg://trader_dashboard:psltest@postgres:5432/trader_dashboard"
+SYNC_CONN = f"postgresql+psycopg2://trader_dashboard:psltest@postgres:5432/trader_dashboard"
 
 class DBConnection:
     @staticmethod
@@ -26,16 +28,50 @@ class DBConnection:
         """
         Returns a connection to the trader_dashboard database.
         """
-        c = psycopg2.connect(
+        c = asyncpg.connect(
             user="trader_dashboard", host="127.0.0.1", dbname="trader_dashboard"
         )
         return c
 
+class DBBase:
+    pass
 
 class RawData:
-    conn = sa.create_engine(CONN).connect()
-    metadata = sa.MetaData()
-    metadata.reflect(bind=conn)
+
+    @classmethod
+    async def get_engine(cls):
+        return create_async_engine(CONN)
+
+    @classmethod
+    async def get_metadata(cls) -> MetaData:
+        """
+        Get the metadata for a table in the database.
+
+        Args:
+            table_name (str): The name of the table.
+
+        Returns:
+            dict: The metadata for the table.
+        """
+        conn = await cls.get_engine()
+        metadata = sa.MetaData()
+        async with conn.begin() as conn:
+            await conn.run_sync(metadata.reflect)
+        return metadata
+
+    @classmethod
+    async def get_table(cls, table_name: str, metadata: MetaData) -> Table:
+        """
+        Get the metadata for a table in the database.
+
+        Args:
+            table_name (str): The name of the table.
+
+        Returns:
+            dict: The metadata for the table.
+        """
+        table = sa.Table(table_name, metadata)
+        return table
 
     @classmethod
     def insert(cls, df: pl.DataFrame, table_name: str) -> None:
@@ -51,12 +87,12 @@ class RawData:
         """
         df.write_database(
             table_name,
-            CONN,
+            SYNC_CONN,
             if_table_exists="replace",
         )
 
     @classmethod
-    def get(cls, table_name: str) -> pl.LazyFrame:
+    async def get(cls, table_name: str) -> pl.LazyFrame:
         """
         Retrieves a raw table from the database.
 
@@ -66,13 +102,16 @@ class RawData:
         Returns:
             pd.DataFrame: The raw table data as a pandas DataFrame.
         """
-        table = sa.Table(table_name, cls.metadata, autoload_with=cls.conn)
+
+        table = sa.Table(table_name, await cls.get_metadata())
         query = sa.select(table)
-        df = pl.read_database(query, cls.conn)
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            df = await conn.run_sync(lambda conn: pl.read_database(query, conn))
         return df.lazy()
 
     @classmethod
-    def chunk(cls, table_name: str, chunk_size: int = 1000, no_chunks: int = 0) -> list:
+    async def chunk(cls, table_name: str, chunk_size: int = 1000, no_chunks: int = 0) -> list:
         """
         Chunk the raw table data into smaller chunks and insert them into the
         database table.
@@ -84,13 +123,13 @@ class RawData:
         Returns:
             list: The list of chunks.
         """
-        df = cls.get(table_name)
+        df = await cls.get(table_name)
         df = df.sort("date", "ticker")
         if not no_chunks:
             chunks = cls._chunk_df_by_size(df, chunk_size)
         else:
             chunks = cls._chunk_df_by_number(df, no_chunks)
-        cls.insert_chunked_table(chunks, table_name)
+        await cls.insert_chunked_table(chunks, table_name)
         return chunks
 
     @staticmethod
@@ -133,7 +172,7 @@ class RawData:
         return chunks
 
     @classmethod
-    def insert_chunked_table(cls, chunks: list, table_name: str) -> None:
+    async def insert_chunked_table(cls, chunks: list, table_name: str) -> None:
         """
         Inserts a list of chunks into a table in the database.
 
@@ -146,26 +185,55 @@ class RawData:
         """
         for i, chunk in enumerate(chunks):
             blob = cloudpickle.dumps(chunk.collect())
-            CVData.add(table_name, blob, i)
+            await CVData.add(table_name, blob, i)
 
 
 class Jobs:
-    conn = sa.create_engine(CONN).connect()
-    metadata = sa.MetaData()
-    metadata.reflect(bind=conn)
-    try:
-        table = sa.Table("jobs", metadata, autoload_with=conn)
-    except sa.exc.NoSuchTableError:
-        table = sa.Table(
-            "jobs",
-            metadata,
-            sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-            sa.Column("name", sa.String),
-            sa.Column("status", sa.String),
-        )
 
     @classmethod
-    def create(cls):
+    async def get_engine(cls):
+        return create_async_engine(CONN)
+
+
+    @classmethod
+    async def get_metadata(cls) -> MetaData:
+        """
+        Get the metadata for a table in the database.
+
+        Args:
+            table_name (str): The name of the table.
+
+        Returns:
+            dict: The metadata for the table.
+        """
+        metadata = sa.MetaData()
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            await conn.run_sync(metadata.reflect)
+        return metadata
+
+    @classmethod
+    async def get_table(cls, metadata: MetaData) -> Table:
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            try:
+                table = await conn.run_sync(
+                    lambda conn: sa.Table('jobs', sa.MetaData(), autoload_with=conn)
+                )
+
+            except sa.exc.NoSuchTableError:
+                table = sa.Table(
+                    "jobs",
+                    metadata,
+                    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+                    sa.Column("name", sa.String),
+                    sa.Column("status", sa.String),
+                )
+        return table
+
+
+    @classmethod
+    async def create(cls):
         """
         Creates a jobs table in the database.
 
@@ -177,11 +245,15 @@ class Jobs:
         Returns:
             None
         """
-        cls.table.create(cls.conn, checkfirst=True)
-        cls.conn.commit()
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            metadata = await cls.get_metadata()
+            table = await cls.get_table(metadata)
+            await conn.run_sync(table.create, checkfirst=True)
+            await conn.commit()
 
     @classmethod
-    def add(cls, job_name: str) -> None:
+    async def add(cls, job_name: str) -> None:
         """
         Add a job to the database.
 
@@ -191,71 +263,112 @@ class Jobs:
         Returns:
         - None
         """
-        ins = cls.table.insert().values(name=job_name, status="idle")
-        cls.conn.execute(ins)
-        cls.conn.commit()
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            metadata = await cls.get_metadata()
+            table = await cls.get_table(metadata)
+            ins = table.insert().values(name=job_name, status="idle")
+            await conn.execute(ins)
+            await conn.commit()
 
     @classmethod
-    def drop(cls):
+    async def drop(cls):
         """
         Drops the 'jobs' table from the database.
         """
-        cls.table.drop(cls.conn, checkfirst=True)
-        cls.conn.commit()
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            metadata = await cls.get_metadata()
+            table = await cls.get_table(metadata)
+            await conn.run_sync(table.drop, checkfirst=True)
+            await conn.commit()
 
 
 class Workers:
-    conn = sa.create_engine(CONN).connect()
-    metadata = sa.MetaData()
-    metadata.reflect(bind=conn)
-    try:
-        jobs_table = sa.Table("jobs", metadata, autoload_with=conn)
-    except sa.exc.NoSuchTableError:
-        jobs_table = sa.Table(
-            "jobs",
-            metadata,
-            sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-            sa.Column("name", sa.String),
-            sa.Column("status", sa.String),
-        )
-    try:
-        table = sa.Table("workers", metadata, autoload_with=conn)
-    except sa.exc.NoSuchTableError:
-        table = sa.Table(
-            "workers",
-            metadata,
-            sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-            sa.Column(
-                "job_id", sa.Integer, sa.ForeignKey(jobs_table.c.id, ondelete="CASCADE")
-            ),
-            sa.Column("name", sa.String),
-            sa.Column("status", sa.String),
-        )
 
     @classmethod
-    def create(cls):
-        """
-        Create the 'workers' table in the database.
-
-        This function connects to the database, reflects the existing tables,
-        and creates a new table called 'workers'.
-        The 'workers' table has the following columns:
-        - id: Integer, primary key, auto-incremented
-        - job_id: Integer, foreign key referencing the 'id' column of the 'jobs'
-        table, with CASCADE delete behavior
-        - name: String
-        - status: String
-
-        After creating the table, the function commits the changes and closes
-        the connection.
-
-        """
-
-        cls.table.create(cls.conn, checkfirst=True)
-        cls.conn.commit()
+    async def get_engine(cls):
+        return create_async_engine(CONN)
 
     @classmethod
-    def add(cls, worker_name: str, jobname: str) -> None:
+    async def get_metadata(cls) -> MetaData:
+        """
+        Get the metadata for a table in the database.
+
+        Args:
+            table_name (str): The name of the table.
+
+        Returns:
+            dict: The metadata for the table.
+        """
+        metadata = sa.MetaData()
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            await conn.run_sync(metadata.reflect)
+        return metadata
+    
+    @classmethod
+    async def get_jobs_table(cls, metadata: MetaData) -> Table:
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            try:
+                jobs_table = await conn.run_sync(
+                    lambda conn: sa.Table('jobs', sa.MetaData(), autoload_with=conn)
+                )
+            except sa.exc.NoSuchTableError:
+                jobs_table = sa.Table(
+                    "jobs",
+                    metadata,
+                    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+                    sa.Column("name", sa.String),
+                    sa.Column("status", sa.String),
+                )
+            return jobs_table
+
+    @classmethod
+    async def get_table(cls, metadata: MetaData, jobs_table: Table) -> Table:
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            try:
+                table = await conn.run_sync(
+                    lambda conn: sa.Table('workers', sa.MetaData(), autoload_with=conn)
+                )
+            except sa.exc.NoSuchTableError:
+                table = sa.Table(
+                    "workers",
+                    metadata,
+                    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+                    sa.Column(
+                        "job_id", sa.Integer, sa.ForeignKey(jobs_table.c.id, ondelete="CASCADE")
+                    ),
+                    sa.Column("name", sa.String),
+                    sa.Column("status", sa.String),
+                )
+        return table
+
+    @classmethod
+    async def create(cls):
+        """
+        Creates a jobs table in the database.
+
+        This function connects to the database, creates a metadata object,
+        reflects the existing tables,
+        defines the structure of the jobs table, and creates the table if it
+        doesn't already exist.
+
+        Returns:
+            None
+        """
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            metadata = await cls.get_metadata()
+            jobs_table = await cls.get_jobs_table(metadata)
+            table = await cls.get_table(metadata, jobs_table)
+            await conn.run_sync(table.create, checkfirst=True)
+            await conn.commit()
+
+    @classmethod
+    async def add(cls, worker_name: str, jobname: str) -> None:
         """
         Add a worker to the database with the specified worker name and job name.
 
@@ -266,21 +379,26 @@ class Workers:
         Returns:
             None
         """
-        job_query = sa.select(cls.jobs_table.c.id).where(
-            cls.jobs_table.c.name == jobname
-        )
-        fetched = cls.conn.execute(job_query).fetchone()
-        assert fetched is not None, f"Job {jobname} not found"
-        job_id = fetched[0]
-        worker_table = sa.Table("workers", cls.metadata)
-        ins = worker_table.insert().values(
-            name=worker_name, status="idle", job_id=job_id
-        )
-        cls.conn.execute(ins)
-        cls.conn.commit()
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            metadata = await cls.get_metadata()
+            jobs_table = await cls.get_jobs_table(metadata)
+            job_query = sa.select(jobs_table.c.id).where(
+                jobs_table.c.name == jobname
+            )
+            fetch = await conn.execute(job_query)
+            fetched = fetch.fetchone()
+            assert fetched is not None, f"Job {jobname} not found"
+            job_id = fetched[0]
+            worker_table = await cls.get_table(metadata, jobs_table)
+            ins = worker_table.insert().values(
+                name=worker_name, status="idle", job_id=job_id
+            )
+            await conn.execute(ins)
+            await conn.commit()
 
     @classmethod
-    def get_workers_by_name(cls, job_name: str) -> str:
+    async def get_workers_by_name(cls, job_name: str) -> str:
         """
         Retrieve the names of workers associated with a specific job name.
 
@@ -291,9 +409,11 @@ class Workers:
             str: A comma-separated string of worker names.
 
         """
-        conn = cls.conn
-        workers_table = cls.table
-        jobs_table = cls.jobs_table
+        conn = await cls.get_engine()
+        metadata = await cls.get_metadata()
+        jobs_table = await cls.get_jobs_table(metadata)
+        workers_table = await cls.get_table(metadata, jobs_table)
+
         worker_query = (
             sa.select(workers_table.c.name)
             .select_from(
@@ -303,13 +423,15 @@ class Workers:
             )
             .where(jobs_table.c.name == job_name)
         )
-        res = conn.execute(worker_query).fetchall()
-        worker_list = list(map(lambda x: x[0], res))
-        workers = ",".join(worker_list)
-        return workers
+        async with conn.begin() as conn:
+            fetch = await conn.execute(worker_query)
+            res = fetch.fetchall()
+            worker_list = list(map(lambda x: x[0], res))
+            workers = ",".join(worker_list)
+            return workers
 
-    @staticmethod
-    def get_workers_by_id(job_id: int) -> str:
+    @classmethod
+    async def get_workers_by_id(cls, job_id: int) -> str:
         """
         Retrieve the names of workers associated with a given job ID.
 
@@ -320,11 +442,10 @@ class Workers:
             str: A comma-separated string of worker names.
 
         """
-        conn = sa.create_engine(CONN).connect()
-        metadata = sa.MetaData()
-        metadata.reflect(bind=conn)
-        jobs_table = sa.Table("jobs", metadata, autoload_with=conn)
-        workers_table = sa.Table("workers", metadata, autoload_with=conn)
+        conn = await cls.get_engine()
+        metadata = await cls.get_metadata()
+        jobs_table = await cls.get_jobs_table(metadata)
+        workers_table = await cls.get_table(metadata, jobs_table)
         worker_query = (
             sa.select(workers_table.c.name)
             .select_from(
@@ -334,58 +455,91 @@ class Workers:
             )
             .where(jobs_table.c.id == job_id)
         )
-        res = conn.execute(worker_query).fetchall()
+        async with conn.begin() as conn:
+            fetch = await conn.execute(worker_query)
+        res = fetch.fetchall()
         worker_list = list(map(lambda x: x[0], res))
         workers = ",".join(worker_list)
         return workers
 
     @classmethod
-    def drop(cls):
+    async def drop(cls):
         """
         Drops the 'workers' table from the database.
         """
-        cls.table.drop(cls.conn, checkfirst=True)
-        cls.conn.commit()
 
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            metadata = await cls.get_metadata()
+            jobs_table = await cls.get_jobs_table(metadata)
+            table = await cls.get_table(metadata, jobs_table)
+            await conn.run_sync(table.drop, checkfirst=True)
+            await conn.commit()
 
 class CVData:
-    conn = sa.create_engine(CONN).connect()
-    metadata = sa.MetaData()
-    metadata.reflect(bind=conn)
-    try:
-        table = sa.Table("cv_data", metadata, autoload_with=conn)
-    except sa.exc.NoSuchTableError:
-        table = sa.Table(
-            "cv_data",
-            metadata,
-            sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-            sa.Column("table_name", sa.String),
-            sa.Column("chunk", sa.Integer),
-            sa.Column("data", sa.LargeBinary),
-        )
 
     @classmethod
-    def create(cls):
+    async def get_engine(cls):
+        return create_async_engine(CONN)
+
+    @classmethod
+    async def get_metadata(cls) -> MetaData:
         """
-        Create a table named 'cv_data' in the database with the specified columns.
+        Get the metadata for a table in the database.
 
-        The table will have the following columns:
-        - id: Integer, primary key, auto-incremented
-        - table_name: String
-        - chunk: Integer
-        - data: LargeBinary
-
-        This function uses SQLAlchemy to create the table and commits the changes
-        to the database.
+        Args:
+            table_name (str): The name of the table.
 
         Returns:
-        None
+            dict: The metadata for the table.
         """
-        cls.table.create(cls.conn, checkfirst=True)
-        cls.conn.commit()
+        metadata = sa.MetaData()
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            await conn.run_sync(metadata.reflect)
+        return metadata
 
     @classmethod
-    def add(cls, table_name: str, data: bytes, i: int) -> None:
+    async def get_table(cls, metadata: MetaData) -> Table:
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            try:
+                table = await conn.run_sync(
+                    lambda conn: sa.Table('cv_data', sa.MetaData(), autoload_with=conn)
+                )
+            except sa.exc.NoSuchTableError:
+                table = sa.Table(
+                    "cv_data",
+                    metadata,
+                    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+                    sa.Column("table_name", sa.String),
+                    sa.Column("chunk", sa.Integer),
+                    sa.Column("data", sa.LargeBinary),
+                )
+        return table
+
+    @classmethod
+    async def create(cls):
+        """
+        Creates a jobs table in the database.
+
+        This function connects to the database, creates a metadata object,
+        reflects the existing tables,
+        defines the structure of the jobs table, and creates the table if it
+        doesn't already exist.
+
+        Returns:
+            None
+        """
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            metadata = await cls.get_metadata()
+            table = await cls.get_table(metadata)
+            await conn.run_sync(table.create, checkfirst=True)
+            await conn.commit()
+
+    @classmethod
+    async def add(cls, table_name: str, data: bytes, i: int) -> None:
         """
         Add CV data to the specified table.
 
@@ -397,24 +551,28 @@ class CVData:
         Returns:
             None
         """
-        ins = cls.table.insert().values(table_name=table_name, data=data, chunk=i)
-        cls.conn.execute(ins)
-        cls.conn.commit()
+        conn = await cls.get_engine()
+        metadata = await cls.get_metadata()
+        table = await cls.get_table(metadata)
+        ins = table.insert().values(table_name=table_name, data=data, chunk=i)
+        async with conn.begin() as conn:
+            await conn.execute(ins)
+            await conn.commit()
 
     @classmethod
-    def drop(cls):
+    async def drop(cls):
         """
-        Drops the 'cv_data' table from the database.
-
-        This function connects to the database, retrieves the 'cv_data' table,
-        and drops it.
-        If the table does not exist, it does nothing.
+        Drops the 'jobs' table from the database.
         """
-        cls.table.drop(cls.conn, checkfirst=True)
-        cls.conn.commit()
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            metadata = await cls.get_metadata()
+            table = await cls.get_table(metadata)
+            await conn.run_sync(table.drop, checkfirst=True)
+            await conn.commit()
 
     @classmethod
-    def get(cls, table_name: str, i: int) -> bytes:
+    async def get(cls, table_name: str, i: int) -> bytes:
         """
         Retrieve CV data by table name and chunk index.
 
@@ -429,32 +587,39 @@ class CVData:
             AssertionError: If data is not found for the given table name and
             chunk index.
         """
-        table = cls.table
+        conn = await cls.get_engine()
+        metadata = await cls.get_metadata()
+        table = await cls.get_table(metadata)
         query = (
             sa.select(table.c.data)
             .where(table.c.table_name == table_name)
             .where(table.c.chunk == i)
         )
-        fetched = cls.conn.execute(query).fetchone()
+        async with conn.begin() as conn:
+            fetch = await conn.execute(query)
+        fetched = fetch.fetchone()
         assert fetched is not None, f"Data not found for {table_name} chunk {i}"
         res = fetched[0]
         return res
 
     @classmethod
-    def get_table_names(cls) -> list:
+    async def get_table_names(cls) -> list:
         """
         Get the names of all tables in the cv_data table.
 
         Returns:
             list: A list of table names.
         """
-        query = sa.select(cls.table.c.table_name).distinct()
-        res = cls.conn.execute(query).fetchall()
+        metadata = await cls.get_metadata()
+        table = await cls.get_table(metadata)
+        query = sa.select(table.c.table_name).distinct()
+        fetch = await cls.conn.execute(query)
+        res = fetch.fetchall()
         names = list(map(lambda x: x[0], res))
         return names
 
     @classmethod
-    def read(cls, table_name: str, i: int) -> pl.LazyFrame:
+    async def read(cls, table_name: str, i: int) -> pl.LazyFrame:
         """
         Read a chunked table from the database.
 
@@ -465,12 +630,12 @@ class CVData:
         Returns:
             pd.DataFrame: The chunked table as a pandas DataFrame.
         """
-        blob = cls.get(table_name, i)
+        blob = await cls.get(table_name, i)
         df = cloudpickle.loads(blob)
         return df.lazy()
 
     @classmethod
-    def standardize(cls, table_name: str, chunk: int) -> None:
+    async def standardize(cls, table_name: str, chunk: int) -> None:
         """
         Standardize the columns of a chunked table in the database.
 
@@ -481,13 +646,14 @@ class CVData:
         Returns:
             None
         """
-        df = cls.read(table_name, chunk).collect()
+        lazy = await cls.read(table_name, chunk)
+        df = lazy.collect()
         if chunk == 0:
-            std_df = cls.read(table_name, 0).collect()
+            std_lazy = await cls.read(table_name, 0)
+            std_df = std_lazy.collect()
         else:
-            std_df = pl.concat(
-                [cls.read(table_name, i) for i in range(chunk)]
-            ).collect()
+            dfs = asyncio.gather(*[cls.read(table_name, i) for i in range(chunk)])
+            std_df = pl.concat([df.collect() for df in await dfs])
         preserved_cols = ["open", "high", "low", "close", "closeadj"]
         numerical_cols = [
             col
@@ -500,38 +666,87 @@ class CVData:
         )
         df = df.sort("date", "ticker")
         blob = cloudpickle.dumps(df)
-        StdCVData.insert(table_name, chunk, blob)
+        await StdCVData.insert(table_name, chunk, blob)
+
+    @classmethod
+    async def get_cv_no_chunks(cls, table_name: str):
+        """
+        Get the number of chunks for a given table.
+
+        Args:
+            table_name (str): The name of the table.
+
+        Returns:
+            int: The number of chunks.
+        """
+        conn = await cls.get_engine()
+        metdata = await cls.get_metadata()
+        table = await cls.get_table(metdata)
+        query = sa.select(table.c.chunk).where(table.c.table_name == table_name)
+        async with conn.begin() as conn:
+            fetch = await conn.execute(query)
+        res = fetch.fetchall()
+        return len(res)
 
 
 class StdCVData:
-    conn = sa.create_engine(CONN).connect()
-    metadata = sa.MetaData()
-    metadata.reflect(bind=conn)
-    try:
-        table = sa.Table("std_cv_data", metadata, autoload_with=conn)
-    except sa.exc.NoSuchTableError:
-        table = sa.Table(
-            "std_cv_data",
-            metadata,
-            sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-            sa.Column("table_name", sa.String),
-            sa.Column("chunk", sa.Integer),
-            sa.Column("data", sa.LargeBinary),
-        )
 
     @classmethod
-    def create(cls) -> None:
+    async def get_engine(cls):
+        return create_async_engine(CONN)
+
+    @classmethod
+    async def get_metadata(cls) -> MetaData:
         """
-        Create a standardized cv_data table in the database.
+        Get the metadata for a table in the database.
+
+        Args:
+            table_name (str): The name of the table.
+
+        Returns:
+            dict: The metadata for the table.
+        """
+        metadata = sa.MetaData()
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            await conn.run_sync(metadata.reflect)
+        return metadata
+    
+    @classmethod
+    async def get_table(cls, metadata: MetaData) -> Table:
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            try:
+                table = await conn.run_sync(
+                    lambda conn: sa.Table('std_cv_data', sa.MetaData(), autoload_with=conn)
+                )
+            except sa.exc.NoSuchTableError:
+                table = sa.Table(
+                    "std_cv_data",
+                    metadata,
+                    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+                    sa.Column("table_name", sa.String),
+                    sa.Column("chunk", sa.Integer),
+                    sa.Column("data", sa.LargeBinary),
+                )
+        return table
+
+    @classmethod
+    async def create(cls):
+        """
 
         Returns:
             None
         """
-        cls.table.create(cls.conn, checkfirst=True)
-        cls.conn.commit()
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            metadata = await cls.get_metadata()
+            table = await cls.get_table(metadata)
+            await conn.run_sync(table.create, checkfirst=True)
+            await conn.commit()
 
     @classmethod
-    def insert(cls, table_name: str, chunk: int, data: bytes) -> None:
+    async def insert(cls, table_name: str, chunk: int, data: bytes) -> None:
         """
         Insert standardized CV data into the database.
 
@@ -543,23 +758,29 @@ class StdCVData:
         Returns:
             None
         """
-        ins = cls.table.insert().values(table_name=table_name, data=data, chunk=chunk)
-        cls.conn.execute(ins)
-        cls.conn.commit()
+        conn = await cls.get_engine()
+        metadata = await cls.get_metadata()
+        table = await cls.get_table(metadata)
+        ins = table.insert().values(table_name=table_name, data=data, chunk=chunk)
+        async with conn.begin() as conn:
+            await conn.execute(ins)
+            await conn.commit()
 
     @classmethod
-    def drop(cls):
+    async def drop(cls):
         """
-        Drop the standardized cv_data table from the database.
+        Drops the 'workers' table from the database.
+        """
 
-        Returns:
-            None
-        """
-        cls.table.drop(cls.conn, checkfirst=True)
-        cls.conn.commit()
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            metadata = await cls.get_metadata()
+            table = await cls.get_table(metadata)
+            await conn.run_sync(table.drop, checkfirst=True)
+            await conn.commit()
 
     @classmethod
-    def read(cls, table_name: str, chunk: int) -> pl.LazyFrame:
+    async def read(cls, table_name: str, chunk: int) -> pl.LazyFrame:
         """
         Read a standardized cv table from the database.
 
@@ -570,12 +791,12 @@ class StdCVData:
         Returns:
             pd.DataFrame: The standardized cv table as a pandas DataFrame.
         """
-        blob = cls.get(table_name, chunk)
+        blob = await cls.get(table_name, chunk)
         df = cloudpickle.loads(blob)
         return df.lazy()
 
     @classmethod
-    def get(cls, table_name: str, chunk: int) -> bytes:
+    async def get(cls, table_name: str, chunk: int) -> bytes:
         """
         Retrieve standardized CV data by table name and chunk index.
 
@@ -586,175 +807,66 @@ class StdCVData:
         Returns:
             bytes: The standardized CV data.
         """
-        table = cls.table
+        conn = await cls.get_engine()
+        metadata = await cls.get_metadata()
+        table = await cls.get_table(metadata)
         query = (
             sa.select(table.c.data)
             .where(table.c.table_name == table_name)
             .where(table.c.chunk == chunk)
         )
-        fetched = cls.conn.execute(query).fetchone()
+        async with conn.begin() as conn:
+            fetch = await conn.execute(query)
+        fetched = fetch.fetchone()
         assert fetched is not None, f"Data not found for {table_name} chunk {chunk}"
         res = fetched[0]
         return res
 
-    @classmethod
-    def calculate_pca_weights(cls, table_name: str, chunk: int) -> bytes:
-        """
-        Calculate PCA weights for a standardized CV table.
-
-        Args:
-            table_name (str): The name of the table.
-            chunk (int): The index of the chunk.
-
-        Returns:
-            bytes: The PCA weights.
-        """
-        if chunk == 0:
-            df = cls.read(table_name, 0).collect()
-        else:
-            df = pl.concat([cls.read(table_name, i) for i in range(chunk)]).collect()
-        df = df.to_pandas()
-        df["momentum"] = df["closeadj"].pct_change().dropna() * df["volume"]
-        pivot = df.pivot_table(
-            index="date", columns="ticker", values="momentum"
-        ).fillna(0)
-        pca = PCA(n_components=5)
-        pca.fit(pivot)
-        weights = pca.components_
-        labeled = [f"PC{i}" for i in range(1, 6)]
-        weights_df = pd.DataFrame(weights, columns=pivot.columns, index=labeled)
-        weights_df = pl.DataFrame(weights_df.T.reset_index())
-        blob = cloudpickle.dumps(weights_df)
-        PCAWeights.add(table_name, blob, chunk)
-        return blob
-
-
-class PCAWeights:
-    conn = sa.create_engine(CONN).connect()
-    metadata = sa.MetaData()
-    metadata.reflect(bind=conn)
-    try:
-        table = sa.Table("pca_weights", metadata, autoload_with=conn)
-    except sa.exc.NoSuchTableError:
-        table = sa.Table(
-            "pca_weights",
-            metadata,
-            sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-            sa.Column("table_name", sa.String),
-            sa.Column("chunk", sa.Integer),
-            sa.Column("data", sa.LargeBinary),
-        )
-
-    @classmethod
-    def create(cls):
-        """
-        Create a table named 'pca_weights' in the database with the specified columns.
-
-        The table will have the following columns:
-        - id: Integer, primary key, auto-incremented
-        - table_name: String
-        - chunk: Integer
-        - data: LargeBinary
-
-        This function uses SQLAlchemy to create the table and commits the changes
-        to the database.
-
-        Returns:
-        None
-        """
-        cls.table.create(cls.conn, checkfirst=True)
-        cls.conn.commit()
-
-    @classmethod
-    def add(cls, table_name: str, data: bytes, i: int) -> None:
-        """
-        Add PCA weights to the specified table.
-
-        Args:
-            table_name (str): The name of the table to add the data to.
-            data (bytes): The PCA weights to be added.
-            i (int): The chunk index of the data.
-
-        Returns:
-            None
-        """
-        ins = cls.table.insert().values(table_name=table_name, data=data, chunk=i)
-        cls.conn.execute(ins)
-        cls.conn.commit()
-
-    @classmethod
-    def drop(cls):
-        """
-        Drops the 'pca_weights' table from the database.
-
-        This function connects to the database, retrieves the 'pca_weights' table,
-        and drops it.
-        If the table does not exist, it does nothing.
-        """
-        cls.table.drop(cls.conn, checkfirst=True)
-        cls.conn.commit()
-
-    @classmethod
-    def get(cls, table_name: str, i: int) -> bytes:
-        """
-        Retrieve PCA weights by table name and chunk index.
-
-        Args:
-            table_name (str): The name of the table.
-            i (int): The chunk index.
-
-        Returns:
-            bytes: The PCA weights.
-
-        Raises:
-            AssertionError
-        """
-        table = cls.table
-        query = (
-            sa.select(table.c.data)
-            .where(table.c.table_name == table_name)
-            .where(table.c.chunk == i)
-        )
-        fetched = cls.conn.execute(query).fetchone()
-        assert fetched is not None, f"Data not found for {table_name} chunk {i}"
-        res = fetched[0]
-        return res
-
-    @classmethod
-    def read(cls, table_name: str, i: int) -> pl.DataFrame:
-        """
-        Read a chunked table from the database.
-
-        Args:
-            table_name (str): The name of the table.
-            i (int): The index of the chunk.
-
-        Returns:
-            pd.DataFrame: The chunked table as a pandas DataFrame.
-        """
-        blob = cls.get(table_name, i)
-        df = cloudpickle.loads(blob)
-        return df
-    
 
 class RenderData:
-    conn = sa.create_engine(CONN).connect()
-    metadata = sa.MetaData()
-    metadata.reflect(bind=conn)
-    try:
-        table = sa.Table("render_data", metadata, autoload_with=conn)
-    except sa.exc.NoSuchTableError:
-        table = sa.Table(
-            "render_data",
-            metadata,
-            sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-            sa.Column("table_name", sa.String),
-            sa.Column("chunk", sa.Integer),
-            sa.Column("data", sa.LargeBinary),
-        )
 
     @classmethod
-    def create(cls):
+    async def get_engine(cls):
+        return create_async_engine(CONN)
+
+    @classmethod
+    async def get_metadata(cls) -> MetaData:
+        """
+        Get the metadata for a table in the database.
+
+        Args:
+            table_name (str): The name of the table.
+
+        Returns:
+            dict: The metadata for the table.
+        """
+        metadata = sa.MetaData()
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            await conn.run_sync(metadata.reflect)
+        return metadata
+    
+    @classmethod
+    async def get_table(cls, metadata: MetaData) -> Table:
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            try:
+                table = await conn.run_sync(
+                    lambda conn: sa.Table('render_data', sa.MetaData(), autoload_with=conn)
+                )
+            except sa.exc.NoSuchTableError:
+                table = sa.Table(
+                    "render_data",
+                    metadata,
+                    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+                    sa.Column("table_name", sa.String),
+                    sa.Column("chunk", sa.Integer),
+                    sa.Column("data", sa.LargeBinary),
+                )
+        return table
+
+    @classmethod
+    async def create(cls):
         """
         Create a table named 'render_data' in the database with the specified columns.
 
@@ -770,11 +882,15 @@ class RenderData:
         Returns:
         None
         """
-        cls.table.create(cls.conn, checkfirst=True)
-        cls.conn.commit()
+        conn = await cls.get_engine()
+        metadata = await cls.get_metadata()
+        table = await cls.get_table(metadata)
+        async with conn.begin() as conn:
+            await conn.run_sync(table.create, checkfirst=True)
+            await conn.commit()
 
     @classmethod
-    def add(cls, table_name: str, data: pl.DataFrame, i: int) -> None:
+    async def add(cls, table_name: str, data: pl.DataFrame, i: int) -> None:
         """
         Add render data to the specified table.
 
@@ -786,25 +902,30 @@ class RenderData:
         Returns:
         None
         """
+        conn = await cls.get_engine()
+        metadata = await cls.get_metadata()
+        table = await cls.get_table(metadata)
         blob = cloudpickle.dumps(data)
-        ins = cls.table.insert().values(table_name=table_name, data=blob, chunk=i)
-        cls.conn.execute(ins)
-        cls.conn.commit()
+        ins = table.insert().values(table_name=table_name, data=blob, chunk=i)
+        async with conn.begin() as conn:
+            await conn.execute(ins)
+            await conn.commit()
 
     @classmethod
-    def drop(cls):
+    async def drop(cls):
         """
-        Drops the 'render_data' table from the database.
+        Drops the 'workers' table from the database.
+        """
 
-        This function connects to the database, retrieves the 'render_data' table,
-        and drops it.
-        If the table does not exist, it does nothing.
-        """
-        cls.table.drop(cls.conn, checkfirst=True)
-        cls.conn.commit()
+        conn = await cls.get_engine()
+        async with conn.begin() as conn:
+            metadata = await cls.get_metadata()
+            table = await cls.get_table(metadata)
+            await conn.run_sync(table.drop, checkfirst=True)
+            await conn.commit()
 
     @classmethod
-    def get(cls, table_name: str, i: int) -> bytes:
+    async def get(cls, table_name: str, i: int) -> bytes:
         """
         Retrieve render data by table name and chunk index.
 
@@ -818,19 +939,24 @@ class RenderData:
         Raises:
             AssertionError
         """
-        table = cls.table
+        conn = await cls.get_engine()
+        metadata = await cls.get_metadata()
+        table = await cls.get_table(metadata)
         query = (
             sa.select(table.c.data)
             .where(table.c.table_name == table_name)
             .where(table.c.chunk == i)
+            .order_by(table.c.id)
         )
-        fetched = cls.conn.execute(query).fetchone()
+        async with conn.begin() as conn:
+            fetch = await conn.execute(query)
+        fetched = fetch.fetchall()
         assert fetched is not None, f"Data not found for {table_name} chunk {i}"
-        res = fetched[0]
+        res = fetched[-1].data
         return res
     
     @classmethod
-    def read(cls, table_name: str, i: int) -> pl.DataFrame:
+    async def read(cls, table_name: str, i: int) -> pl.DataFrame:
         """
         Read a chunked table from the database.
 
@@ -841,14 +967,14 @@ class RenderData:
         Returns:
             pd.DataFrame: The chunked table as a pandas DataFrame.
         """
-        blob = cls.get(table_name, i)
+        blob = await cls.get(table_name, i)
         df = cloudpickle.loads(blob)
         return df
     
 
 
 
-def remove_table_name_from_cv_table(table_name: str) -> None:
+async def remove_table_name_from_cv_table(table_name: str) -> None:
     """
     Remove a table from the cv_data table.
 
@@ -858,14 +984,13 @@ def remove_table_name_from_cv_table(table_name: str) -> None:
     Returns:
         None
     """
-    conn = sa.create_engine(CONN).connect()
+    conn = create_async_engine(CONN)
     metadata = sa.MetaData()
-    metadata.reflect(bind=conn)
-    table = sa.Table("cv_data", metadata, autoload_with=conn)
+    metadata.reflect(bind=conn.sync_engine)
+    table = sa.Table("cv_data", metadata)
     query = sa.delete(table).where(table.c.table_name == table_name)
-    conn.execute(query)
-    conn.commit()
-    conn.close()
+    await conn.execute(query)
+    await conn.commit()
 
 
 def get_workers():
@@ -875,10 +1000,10 @@ def get_workers():
     Returns:
         list: A list of workers.
     """
-    conn = sa.create_engine(CONN).connect()
+    conn = create_async_engine(CONN)
     metadata = sa.MetaData()
-    metadata.reflect(bind=conn)
-    workers_table = sa.Table("workers", metadata, autoload_with=conn)
+    metadata.reflect(bind=conn.sync_engine)
+    workers_table = sa.Table("workers", metadata)
     query = sa.select(workers_table.c.name)
     res = conn.execute(query).fetchall()
     workers = list(map(lambda x: x[0], res))
@@ -893,10 +1018,10 @@ def get_jobs():
     Returns:
         list: A list of jobs.
     """
-    conn = sa.create_engine(CONN).connect()
+    conn = create_async_engine(CONN)
     metadata = sa.MetaData()
-    metadata.reflect(bind=conn)
-    jobs_table = sa.Table("jobs", metadata, autoload_with=conn)
+    metadata.reflect(bind=conn.sync_engine)
+    jobs_table = sa.Table("jobs", metadata)
     query = sa.select(jobs_table.c.name)
     res = conn.execute(query).fetchall()
     jobs = list(map(lambda x: x[0], res))
@@ -911,11 +1036,11 @@ def get_job_worker_mapping():
     Returns:
         dict: A dictionary mapping jobs to workers.
     """
-    conn = sa.create_engine(CONN).connect()
+    conn = create_async_engine(CONN)
     metadata = sa.MetaData()
-    metadata.reflect(bind=conn)
-    jobs_table = sa.Table("jobs", metadata, autoload_with=conn)
-    workers_table = sa.Table("workers", metadata, autoload_with=conn)
+    metadata.reflect(bind=conn.sync_engine)
+    jobs_table = sa.Table("jobs", metadata)
+    workers_table = sa.Table("workers", metadata)
     query = sa.select(jobs_table.c.name, workers_table.c.name).select_from(
         workers_table.join(jobs_table, jobs_table.c.id == workers_table.c.job_id)
     )
@@ -929,69 +1054,41 @@ def get_job_worker_mapping():
     conn.close()
     return mapping
 
-
-def get_cv_no_chunks(table_name: str):
-    """
-    Get the number of chunks for a given table.
-
-    Args:
-        table_name (str): The name of the table.
-
-    Returns:
-        int: The number of chunks.
-    """
-    conn = sa.create_engine(CONN).connect()
-    metadata = sa.MetaData()
-    metadata.reflect(bind=conn)
-    table = sa.Table("cv_data", metadata)
-    query = sa.select(table.c.chunk).where(table.c.table_name == table_name)
-    res = conn.execute(query).fetchall()
-    conn.close()
-    return len(res)
+async def main():
+    await Workers.drop()
+    await Jobs.drop()
+    await CVData.drop()
+    await StdCVData.drop()
+    await RenderData.drop()
+    await Jobs.create()
+    await Workers.create()
+    await CVData.create()
+    await Jobs.add("test")
+    await Workers.add("worker1", "test")
+    await Workers.add("worker2", "test")
+    print(await Workers.get_workers_by_name("test"))
+    print(await Workers.get_workers_by_id(1))
+    test_df = (
+        pl.read_csv("trader-dashboard/data/master.csv", try_parse_dates=True)
+        .with_columns(pl.col("date").cast(pl.Date).alias("date"))
+        .drop("")
+        .sort("date", "ticker")
+    )
+    test_df = test_df.select(cs.all().forward_fill())
+    RawData.insert(test_df, "test_table")
+    print(await RawData.get("test_table"))
+    await RawData.chunk("test_table", 63)
+    print(await CVData.read("test_table", 0))
+    await StdCVData.create()
+    for i in range(await CVData.get_cv_no_chunks("test_table")):
+        await CVData.standardize("test_table", i)
+        print(await StdCVData.read("test_table", i))
+    await RenderData.drop()
+    await RenderData.create()
 
 
 if __name__ == "__main__":
-    # Workers.drop()
-    # Jobs.drop()
-    # CVData.drop()
-    # StdCVData.drop()
-    # Jobs.create()
-    # Workers.create()
-    # CVData.create()
-    # Jobs.add("test")
-    # Workers.add("worker1", "test")
-    # Workers.add("worker2", "test")
-    # print(Workers.get_workers_by_name("test"))
-    # print(Workers.get_workers_by_id(1))
-    # test_df = (
-    #     pl.read_csv("trader-dashboard/data/master.csv", try_parse_dates=True)
-    #     .with_columns(pl.col("date").cast(pl.Date).alias("date"))
-    #     .drop("")
-    #     .sort("date", "ticker")
-    # )
-    # test_df = test_df.select(cs.all().forward_fill())
-    # RawData.insert(test_df, "test_table")
-    # print(RawData.get("test_table"))
-    # RawData.chunk("test_table", 240)
-    # print(CVData.read("test_table", 0))
-    # StdCVData.create()
-    # CVData.standardize("test_table", 0)
-    # CVData.standardize("test_table", 1)
-    # CVData.standardize("test_table", 2)
-    # CVData.standardize("test_table", 3)
-    # CVData.standardize("test_table", 4)
-    # PCAWeights.drop()
-    # print(StdCVData.read("test_table", 0).collect())
-    # print(StdCVData.read("test_table", 1).collect())
-    # print(StdCVData.read("test_table", 2).collect())
-    # print(StdCVData.read("test_table", 3).collect())
-    # print(StdCVData.read("test_table", 4).collect())
-    # PCAWeights.create()
-    # StdCVData.calculate_pca_weights("test_table", 0)
-    # StdCVData.calculate_pca_weights("test_table", 1)
-    # StdCVData.calculate_pca_weights("test_table", 2)
-    # StdCVData.calculate_pca_weights("test_table", 3)
-    # StdCVData.calculate_pca_weights("test_table", 4)
-    RenderData.create()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
     # remove_table_name_from_cv_table("test_table")
     # print(get_cv_no_chunks("test_table"))

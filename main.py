@@ -5,45 +5,26 @@ It sets up the Sanic server, handles requests for uploading CSV files,
 starting training, and stopping training. 
 It also includes functions for creating the React components used in
 the application.
-
-Train and validate are mutually recursive functions that train and validate
-the model on a specific fold of the cross-validation period.
-
-The `start_handler` function handles the start request for training and returns
-a JSON response indicating the status of the training process, the model name,
-and the test render file name.
-
-The `stop_handler` function stops the training for a specific job and returns a
-response indicating the status of the operation.
-
-The `train_cv_period` function trains the model on a specific fold of the 
-cross-validation period, while the `validate_cv_period` function validates the
-model on the subsequent fold of the cross-validation period.
-
-`train_cv_period` takes a request object containing the training parameters
-and returns a continuation of the validation process.
-
-`validate_cv_period` function takes a request object containing the validation
-parameters and returns a continuation of the training process or finishes the
-process and  returns a response indicating the status of the operation.
 """
+import asyncio
 import multiprocessing as mp
 import os
 import gc
 
 from functools import partial
 from typing import Type
-from time import sleep
 
 import reactpy
 import sanic
 import numpy as np
 import polars as pl
+import polars.selectors as cs
 import torch
 
 from stable_baselines3 import SAC, PPO
 from stable_baselines3.common.vec_env import VecMonitor, DummyVecEnv
 from reactpy.backend.sanic import configure
+from reactpy_apexcharts import ApexChart
 from sanic.log import logger
 from sanic import Request, json, Sanic, redirect, html
 
@@ -55,14 +36,14 @@ from src.render_gfx import get_rewards_curve_figure
 CONN = "postgresql+psycopg2://trader_dashboard@0.0.0.0:5432/trader_dashboard"
 Sanic.start_method = "fork"
 main_app = Sanic(__name__)
-main_app.config["RESPONSE_TIMEOUT"] = 3600
+main_app.config["RESPONSE_TIMEOUT"] = 1e6
 app_path = os.path.dirname(__file__)
 main_app.static("/static", os.path.join(app_path, "static"))
 log_dir = os.path.join(app_path, "log")
 
 
 @main_app.get("/start")
-def start_handler(request: Request):
+async def start_handler(request: Request):
     """
     Handles the start request for training.
 
@@ -70,70 +51,30 @@ def start_handler(request: Request):
         request (Request): The request object containing the run parameters.
 
     Returns:
-        JSON response indicating the status of the training process,
-        the model name, and the test render file name.
+        A redirect to the summary page.
     """
     args = request.args
     logger.info("Starting training")
     table_name = args.get("table_name")
     jobname = args.get("jobname", "default")
-    cv_periods = int(args.get("cv_periods", 5))
-    timesteps = int(args.get("timesteps", 1000))
-    ncpu = int(args.get("ncpu", 64))
-    model_name = args.get("model_name", "ppo")
-    i = int(args.get("i", 0))
-    db.Jobs.add(jobname)
+    start_i = int(args.get("i", 0))
+    cv_periods = await db.CVData.get_cv_no_chunks(table_name)
+    await db.Jobs.add(jobname)
     logger.info(
         "Starting training for %s with cv_periods=%s",
         table_name,
         cv_periods,
     )
-    network_depth = int(args.get("network_depth", 4))
-    kwargs = {
-        f"network_depth_{i}": int(args.get(f"network_depth_{i}", 4096))
-        for i in range(network_depth)
-    }
+    for i in range(start_i, cv_periods - 1):
+        logger.info("Starting training on fold %i of %i", i, cv_periods)
+        train_cv_period(args, i, request)
+        await validate_cv_period(args, i)
+    redirect_summary = request.app.url_for(
+        "get_job_summary", jobname=jobname, table_name=table_name
+        )
+    return redirect(redirect_summary)
 
-    redirect_train = request.app.url_for(
-        "train_cv_period",
-        table_name=table_name,
-        jobname=jobname,
-        cv_periods=cv_periods,
-        max_i=cv_periods - 1,
-        network_depth=network_depth,
-        i=i,
-        timesteps=timesteps,
-        ncpu=ncpu,
-        model_name=model_name,
-        **kwargs,
-    )
-    return redirect(redirect_train)
-
-
-@main_app.get("/finished_training")
-async def finished_training(request: Request):
-    """
-    Handles the finished training request.
-
-    Args:
-        request (Request): The request object.
-
-    Returns:
-        dict: A dictionary containing the status of the operation.
-    """
-    args = request.args
-    jobname = args.get("jobname", "default")
-    previous_worker = args.get("previous_worker", "null")
-    if previous_worker != "null":
-        request.app.m.restart(previous_worker)
-        logger.info("Error training for job: %s", jobname)
-        return json({"status": "error"})
-    logger.info("Finished training for job: %s", jobname)
-    return json({"status": "success"})
-
-
-@main_app.get("/train_cv_period")
-async def train_cv_period(request):
+def train_cv_period(args, i, request):
     """
     Train the model on a specific fold of the cross-validation period.
 
@@ -143,24 +84,16 @@ async def train_cv_period(request):
     Returns:
         A continuation of the training process.
     """
-
-    args = request.args
-    previous_worker = args.get("previous_worker", "null")
-    if previous_worker != "null":
-        request.app.m.restart(previous_worker)
     table_name = args.get("table_name")
-    i = int(args.get("i"), 0)
     ncpu = int(args.get("ncpu", 64))
     render_mode = args.get("render_mode", None)
     network_depth = int(args.get("network_depth", 4))
     timesteps = int(args.get("timesteps", 1000))
-    train_freq = int(args.get("train_freq", 1))
     batch_size = int(args.get("batch_size", 1024))
     use_sde = bool(args.get("use_sde", 0))
     device = args.get("device", "auto")
     progress_bar = bool(args.get("progress_bar", 1))
     jobname = args.get("jobname", "default")
-    cv_periods = int(args.get("cv_periods", 5))
     network_depth = int(args.get("network_depth", 4))
     network_width = []
     for j in range(network_depth):
@@ -169,8 +102,6 @@ async def train_cv_period(request):
     model_name = args.get("model_name", "ppo")
     risk_aversion = float(args.get("risk_aversion", 0.9))
     model = PPO if model_name == "ppo" else SAC
-    logger.info("Training on fold %i of %i", i, cv_periods)
-    request.app.shared_ctx.hallpass.acquire()
     try:
         env_fn = partial(
             Trader,
@@ -181,12 +112,9 @@ async def train_cv_period(request):
             risk_aversion=risk_aversion,
         )
         env_fns = [env_fn for _ in range(ncpu)]
-        env = SanicVecEnv(env_fns, request.app, jobname)  # type: ignore
+        env = SanicVecEnv(env_fns, request.app, jobname)
     except torch.cuda.OutOfMemoryError:
         logger.error("Error creating environment")
-        return redirect(f"/finished_training?jobname={jobname}")
-    finally:
-        request.app.shared_ctx.hallpass.release()
     env = VecMonitor(env, log_dir + f"/monitor/{jobname}/{i}/{i}")
     network = {
         "pi": network_width,
@@ -212,36 +140,14 @@ async def train_cv_period(request):
         del model_train
         gc.collect()
         torch.cuda.empty_cache()
-        sleep(5)
     except KeyboardInterrupt:
         logger.error("Training interrupted")
         return redirect(f"/finished_training?jobname={jobname}?status=error")
     env.close()
-    redirect_continue = request.app.url_for(
-        "validate_cv_period",
-        i=i,
-        max_i=cv_periods - 1,
-        table_name=table_name,
-        jobname=jobname,
-        render_mode=render_mode,
-        previous_worker=request.app.m.name,
-        ncpu=ncpu,
-        cv_periods=cv_periods,
-        device=device,
-        progress_bar=progress_bar,
-        use_sde=use_sde,
-        batch_size=batch_size,
-        train_freq=train_freq,
-        timesteps=timesteps,
-        network_depth=network_depth,
-        network_width=network_width,
-        model_name=model_name,
-    )
-    return redirect(redirect_continue)
+    return 0
 
 
-@main_app.get("/validate_cv_period")
-def validate_cv_period(request: Request):
+async def validate_cv_period(args, i):
     """
     Validate the table name and return the number of rows.
 
@@ -251,31 +157,12 @@ def validate_cv_period(request: Request):
     Returns:
         A continuation of the training process.
     """
-    args = request.args
-    previous_worker = args.get("previous_worker", "null")
-    if previous_worker != "null":
-        request.app.m.restart(previous_worker)
     table_name = args.get("table_name")
     render_mode = args.get("render_mode", "human")
-    jobname = args.get("jobname", "default")
-    max_i = int(args.get("max_i"), 5)
-    i = int(args.get("i", 0))
-    ncpu = int(args.get("ncpu", 64))
     render_mode = args.get("render_mode", None)
-    network_depth = int(args.get("network_depth", 3))
-    timesteps = int(args.get("timesteps", 1000))
-    train_freq = int(args.get("train_freq", 1))
-    batch_size = int(args.get("batch_size", 1024))
-    use_sde = bool(args.get("use_sde", 0))
-    device = args.get("device", "auto")
-    progress_bar = bool(args.get("progress_bar", 1))
-    jobname = args.get("jobname", "TEST")
-    cv_periods = int(args.get("cv_periods", 5))
-    network_width = args.get("network_width", [4096, 2048, 1024])
     model_name = args.get("model_name", "ppo")
     risk_aversion = float(args.get("risk_aversion", 0.9))
     model: Type[PPO] | Type[SAC] = PPO if model_name == "ppo" else SAC
-    logger.info("Validating on fold %i of %i", i + 1, cv_periods)
     env_test = Trader(
         table_name,
         i + 1,
@@ -283,6 +170,7 @@ def validate_cv_period(request: Request):
         render_mode=render_mode,
         risk_aversion=risk_aversion,
     )
+    await env_test.start()
     model_handle = f"model_{i}"
     model_test = model.load(model_handle, env=env_test)
     vec_env = model_test.get_env()
@@ -297,47 +185,17 @@ def validate_cv_period(request: Request):
     episode_starts = np.ones((num_envs,), dtype=bool)
     while True:
         action, lstm_states = model_test.predict(
-            #  We ignore the type error here because the type hint for obs
-            #  is not correct
-            obs,  # type: ignore
-            state=lstm_states,
-            episode_start=episode_starts,
+            obs, state=lstm_states, episode_start=episode_starts,
         )
         obs, _, done, _ = vec_env.step(action)
         if done:
             break
     render_data = env_test.get_render()
-    db.RenderData.add(jobname, render_data, i)
+    await db.RenderData.add(table_name, render_data, i+1)
     del model_test
     gc.collect()
     torch.cuda.empty_cache()
-    sleep(5)
-    i += 1
-    redirect_continue = request.app.url_for(
-        "train_cv_period",
-        i=str(i),
-        max_i=str(max_i),
-        table_name=table_name,
-        jobname=jobname,
-        render_mode=render_mode,
-        previous_worker=request.app.m.name,
-        ncpu=str(ncpu),
-        cv_periods=str(cv_periods),
-        device=device,
-        progress_bar=progress_bar,
-        use_sde=use_sde,
-        batch_size=batch_size,
-        train_freq=train_freq,
-        timesteps=timesteps,
-        network_depth=network_depth,
-        network_width=network_width,
-        model_name=model_name,
-    )
-    redirect_end = f"/finished_training?jobname={jobname}"
-    if i < max_i:
-        return redirect(redirect_continue)
-    else:
-        return redirect(redirect_end)
+    return 0
 
 
 @main_app.main_process_start
@@ -358,15 +216,28 @@ async def main_process_start(app):
     logger.debug("Created shared context")
     app.shared_ctx.hallpass = mp.Semaphore()
     app.shared_ctx.hallpass.acquire()
+    app.shared_ctx.loop = asyncio.get_event_loop()
     logger.debug("Created hallpass")
-    db.Workers.drop()
+    await db.RenderData.drop()
+    logger.debug("Dropped old render data table")
+    await db.StdCVData.drop()
+    logger.debug("Dropped old standard cv data table")
+    await db.CVData.drop()
+    logger.debug("Dropped old raw data table")
+    await db.Workers.drop()
     logger.debug("Dropped old workers table")
-    db.Jobs.drop()
+    await db.Jobs.drop()
     logger.debug("Dropped old jobs table")
-    db.Jobs.create()
+    await db.Jobs.create()
     logger.debug("Created new jobs table")
-    db.Workers.create()
+    await db.Workers.create()
     logger.debug("Created new workers table")
+    await db.CVData.create()
+    logger.debug("Created new cv data table")
+    await db.StdCVData.create()
+    logger.debug("Created new standard cv data table")
+    await db.RenderData.create()
+    logger.debug("Created new render data table")
 
 
 @main_app.main_process_ready
@@ -405,6 +276,7 @@ async def upload_csv(request: Request):
     if input_file.type != "text/csv":
         return json({"status": "error"})
     output_path = request.args.get("output")
+    ffill = bool(int(request.args.get("ffill", 0)))
     parse_dates = bool(int(request.args.get("parse_dates", 0)))
     file_path = os.path.join(app_path, "data", output_path)
     logger.info("Uploading %s to %s", input_file.name, file_path)
@@ -412,6 +284,10 @@ async def upload_csv(request: Request):
         f.write(input_file.body.decode("utf-8"))
     logger.info("Uploaded %s to %s", input_file.name, file_path)
     df = pl.read_csv(file_path, try_parse_dates=parse_dates)
+    if "" in df.columns:
+        df = df.drop("")
+    if ffill:
+        df = df.select(cs.all().forward_fill())
     db.RawData.insert(df, output_path)
     logger.info("Inserted %s into database as raw table", output_path)
     return json({"status": "success"})
@@ -448,7 +324,7 @@ def get_workers(request: Request):
 
 
 @main_app.get("/get_test_render")
-def get_test_render(request: Request):
+async def get_test_render(request: Request):
     """
     Get the test render file for a specific job.
 
@@ -460,45 +336,99 @@ def get_test_render(request: Request):
     """
     jobname = request.args.get("jobname", "default")
     chunk = request.args.get("chunk", 0)
-    test_render: pl.DataFrame = db.RenderData.read(jobname, chunk)
+    test_render: pl.DataFrame = await db.RenderData.read(jobname, chunk)
     res = test_render.to_pandas().to_html()
     return html(res)
 
 
-@main_app.get("/get_model")
-def get_model(request: Request):
+@main_app.get("/get_job_summary")
+async def get_job_summary(request: Request):
     """
-    Get the model file for a specific job.
+    Get the summary of a specific job.
 
     Args:
         request (Request): The request object.
 
     Returns:
-        dict: A dictionary containing the model file.
+        dict: A dictionary containing the summary of the job.
     """
-    jobname = request.args.get("jobname", "default")
-    model = db.get_model(jobname)
-    return json({"model": model})
+    table_name = request.args.get("table_name")
+    returns, dates = await get_validation_returns(table_name)
+    returns_index = 100 * returns.cum_sum().exp()
+    drawdown = 100 * (
+        returns_index - returns_index.cum_max()
+        ) / returns_index.cum_max()
+    chart = await get_returns_drawdown_chart(returns_index, drawdown, dates)
+    sharpe_ratio = returns.mean() / returns.std()
+    return json(
+        {
+            "sharpe_ratio": sharpe_ratio * np.sqrt(252),
+            "returns_index": returns_index.to_list(),
+        }
+    )
 
 
-@main_app.get("/get_log")
-def get_log(request: Request):
+async def get_returns_drawdown_chart(
+        returns_index: pl.Series, drawdown: pl.Series, dates: pl.Series
+        ):
     """
-    Get the log file for a specific job.
+    Get a chart of the returns and drawdown.
 
     Args:
-        request (Request): The request object.
+        returns_index (np.ndarray): The returns index.
+        drawdown (np.ndarray): The drawdown.
+        dates (np.ndarray): The dates.
 
     Returns:
-        dict: A dictionary containing the log file.
+        figure: The figure of the returns and drawdown chart.
     """
-    jobname = request.args.get("jobname", "default")
-    log = db.get_log(jobname)
-    return json({"log": log})
+    fig = ApexChart(
+        options={
+            "chart": {"id": "returns-drawdown-chart"},
+            "xaxis": {"category": dates.to_list()},
+        },
+        series=[
+            {"name": "returns", "data": returns_index.to_list()},
+            {"name": "drawdown", "data": drawdown.to_list()},
+        ],
+        chart_type="line",
+        width=800,
+        height=400,
+    )
+    return fig
+    
+
+async def get_validation_returns(table_name):
+    """
+    Get the validation returns for a specific job.
+
+    Args:
+        jobname (str): The name of the job.
+
+    Returns:
+        dict: A dictionary containing the validation returns.
+    """
+    no_chunks = await db.CVData.get_cv_no_chunks(table_name)
+    accumulator = []
+    date_accumulator = []
+    for i in range(1, no_chunks):
+        render = await db.RenderData.read(table_name, i)
+        render = (
+            render.with_columns(
+                pl.col("market_value").log().diff().alias("returns")
+                )
+            )
+        returns = render["returns"]
+        dates = render["Date"]
+        accumulator.append(returns)
+        date_accumulator.append(dates)
+    returns = pl.concat(accumulator)
+    dates = pl.concat(date_accumulator)
+    return returns, dates
 
 
 @main_app.get("/prepare_data")
-def prepare_data(request: Request):
+async def prepare_data(request: Request):
     """
     Prepare the data for training.
 
@@ -513,9 +443,12 @@ def prepare_data(request: Request):
     no_chunks = int(request.args.get("no_chunks", 0))
     chunk_size = int(request.args.get("chunk_size", 1000))
     if not no_chunks:
-        db.Chunk.create_chunked_table(table_name, chunk_size=chunk_size)
+        await db.RawData.chunk(table_name, chunk_size=chunk_size)
+        no_chunks = await db.CVData.get_cv_no_chunks(table_name)
     else:
-        db.Chunk.create_chunked_table(table_name, no_chunks=no_chunks)
+        await db.RawData.chunk(table_name, no_chunks=no_chunks)
+    for i in range(no_chunks):
+        await db.CVData.standardize(table_name, i)
     return json({"status": "success"})
 
 
@@ -572,4 +505,4 @@ def react_app():
 configure(main_app, react_app)
 
 if __name__ == "__main__":
-    main_app.run(host="0.0.0.0", port=8002, debug=True, workers=8)
+    main_app.run(host="0.0.0.0", port=8004, debug=True, workers=16)

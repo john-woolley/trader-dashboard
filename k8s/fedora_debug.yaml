@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fedora
+  labels:
+    app: fedora
+spec:
+  containers:
+  - image: fedora:39
+    command:
+      - "sleep"
+      - "604800"
+    imagePullPolicy: IfNotPresent
+    name: fedora
+  restartPolicy: Always

@@ -42,7 +42,7 @@ Example usage:
     next_observation, reward, done, info = env.step(action)
 
 """
-
+import asyncio
 import random
 from typing import Tuple, Any, SupportsFloat, Dict, Union
 
@@ -50,7 +50,6 @@ from collections import deque
 
 import numpy as np
 import gymnasium as gym
-import pandas as pd
 import polars as pl
 
 from gymnasium import spaces
@@ -133,42 +132,17 @@ class Trader(gym.Env):
         super().__init__()
         self.render_mode = render_mode
         self.risk_aversion = risk_aversion
-        self.data = db.StdCVData.read(table_name, chunk).sort("date")
-        self.data = self.data.with_columns(
-            pl.col("date").cast(pl.Date).alias("date"),
-            pl.col("capex").truediv(pl.col("equity")).alias("capexratio"),
-            pl.col("closeadj").alias("spot"),
-        ).fill_nan(0.0)
-        self.dates = self.data.select("date").unique().collect().to_series()
-        self.symbols = self.data.select("ticker").unique().collect().to_series()
-        self.no_symbols = len(self.symbols)
         self.test = test
         self.ep_length = ep_length
-        if self.test:
-            self.ep_length = len(self.dates)
         self.initial_balance: float = initial_balance
-        low = [-1] * self.no_symbols + [0.05, 1.0]
-        high = [1] * self.no_symbols + [0.25, 1.5]
-        self.action_space = spaces.Box(
-            low=np.array(low, dtype=np.float32),
-            high=np.array(high, dtype=np.float32),
-            shape=(self.no_symbols + 2,),
-        )
-        self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(n_lags, 52 * self.no_symbols + 39)
-        )
-        self.cov = np.eye(self.no_symbols)
+        self.table_name = table_name
+        self.chunk = chunk
         self.transaction_cost = transaction_cost
         self.current_step = 0
         self.buffer_len = n_lags
         self.render_df = pl.LazyFrame()
         self.render_dict: Dict[str, Dict[str, Any]] = {}
         self.balance = self.initial_balance
-        self.net_leverage = np.zeros(self.no_symbols)
-        self.model_portfolio = np.zeros(self.no_symbols)
-        self.spot = np.zeros(self.no_symbols)
-        self.prev_spot = np.zeros(self.no_symbols)
-        self.vol_ests = np.array([0.1] * self.no_symbols)
         self.return_series = np.array([])
         self.var = 0
         self.log_ret = 0
@@ -179,7 +153,41 @@ class Trader(gym.Env):
         self.rate = 0.01
         self.prev_portfolio_value = 0
         self.period = 0
+        
+    async def start(self):
+        await self.__post_init__()
+
+    async def __post_init__(self):
+        self.data = await db.StdCVData.read(self.table_name, self.chunk)
+        self.data = self.data.sort("date", "ticker")
+        self.data = self.data.with_columns(
+            pl.col("date").cast(pl.Date).alias("date"),
+            pl.col("capex").truediv(pl.col("equity")).alias("capexratio"),
+            pl.col("closeadj").alias("spot"),
+        ).fill_nan(0.0)
+        self.dates = self.data.select("date").unique().collect().to_series()
+        if self.test:
+            self.ep_length = len(self.dates)
+        self.symbols = self.data.select("ticker").unique().collect().to_series()
+        self.no_symbols = len(self.symbols)
+        low = [-1] * self.no_symbols + [0.05, 0.5]
+        high = [1] * self.no_symbols + [1, 1.5]
+        self.action_space = spaces.Box(
+            low=np.array(low, dtype=np.float32),
+            high=np.array(high, dtype=np.float32),
+            shape=(self.no_symbols + 2,),
+        )
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(self.buffer_len, 44 * self.no_symbols + 39)
+        )
+        self.cov = np.eye(self.no_symbols)
+        self.hurst_exponents = np.array([0.5] * self.no_symbols)
         self.action = np.zeros(self.no_symbols)
+        self.net_leverage = np.zeros(self.no_symbols)
+        self.model_portfolio = np.zeros(self.no_symbols)
+        self.spot = np.zeros(self.no_symbols)
+        self.prev_spot = np.zeros(self.no_symbols)
+        self.vol_ests = np.array([0.1] * self.no_symbols)
 
     @property
     def current_portfolio_value(self):
@@ -302,6 +310,8 @@ class Trader(gym.Env):
             .to_numpy()
             .flatten()
         )
+        self.hurst_exponents = np.array([0.5] * self.no_symbols)
+        self.rsi = np.array([50] * self.no_symbols)
         self.balance = self.initial_balance
         self.log_ret = 0
         self.state_buffer = deque([], self.buffer_len)
@@ -311,6 +321,48 @@ class Trader(gym.Env):
         while len(self.state_buffer) < self.buffer_len:
             self.state_buffer.append(state_frame)
         return self._get_observation(), {}
+    
+    def _get_hurst_exponent(self, ts: np.ndarray) -> float:
+            """
+            Calculate the Hurst exponent for a given time series.
+
+            Parameters:
+            - ts (np.ndarray): The time series for which the Hurst exponent
+                is to be calculated.
+
+            Returns:
+            - float: The calculated Hurst exponent.
+            """
+            lags = range(2, self.buffer_len//2)
+            tau = [np.std(np.subtract(ts[lag:], ts[:-lag])) for lag in lags]
+            poly = np.polyfit(np.log(lags), np.log(tau), 1)
+            return poly[0]
+    
+    def _get_rsi(self, ts: np.ndarray) -> float:
+        """
+        Calculate the Relative Strength Index (RSI) for a given time series.
+
+        Parameters:
+        - ts (np.ndarray): The time series for which the RSI is to be calculated.
+        - period (int): The period for the RSI calculation. Default is 14.
+
+        Returns:
+        - float: The calculated RSI.
+        """
+        period = len(ts)
+        delta = np.diff(ts)
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        avg_gain = np.mean(gain)
+        avg_loss = np.mean(loss)
+        for i in range(period, len(ts)):
+            avg_gain = (avg_gain * (period - 1) + gain[i]) / period
+            avg_loss = (avg_loss * (period - 1) + loss[i]) / period
+        if avg_loss == 0:
+            return 100
+        rs = avg_gain / avg_loss
+        rsi = 100 - 100 / (1 + rs)
+        return rsi
 
     def _get_state_frame(self) -> np.ndarray:
         """
@@ -339,10 +391,29 @@ class Trader(gym.Env):
             covariance = np.corrcoef(spot_window[:, :, 0].T)[
                 np.triu_indices(self.no_symbols)
             ]
+            hurst_exponents = (np.array(
+                [
+                    self._get_hurst_exponent(spot_window[:, i, 0])
+                    for i in range(self.no_symbols)
+                ]
+            ) + (self.buffer_len - 1) * self.hurst_exponents) / self.buffer_len
+            self.hurst_exponents = hurst_exponents
+            rsi = (np.array(
+                [
+                    self._get_rsi(spot_window[:, i, 0])
+                    for i in range(self.no_symbols)
+                ]
+            ) + (self.buffer_len - 1) * self.rsi) / self.buffer_len
+            self.rsi = rsi
+            distance_from_max  = np.max(spot_window[:, :, 0], axis=0) / spot
+            distance_from_min = spot / np.min(spot_window[:, :, 0], axis=0)
         else:
             covariance = np.eye(self.no_symbols)[np.triu_indices(self.no_symbols)]
+            hurst_exponents = np.array([0.5] * self.no_symbols)
+            rsi = np.array([50] * self.no_symbols)
+            distance_from_max = np.ones(self.no_symbols)
+            distance_from_min = np.ones(self.no_symbols)
         stock_state = spot_window[-1, :, 1:-macro_len].reshape(-1)
-        stock_state = np.concatenate([stock_state, stock_state**2])
         macro_state = spot_window[-1, -1, -macro_len:]
         self.spot = spot
         log_spot_window = np.log(spot_window[:, :, 0])
@@ -351,7 +422,7 @@ class Trader(gym.Env):
         else:
             spot_returns = np.zeros(self.no_symbols)
         spot_rank = get_percentile(spot, spot_window[:, :, 0], axis=0)
-        stock_state = np.concatenate([stock_state, spot_rank, spot_returns, covariance])
+        stock_state = np.concatenate([stock_state, spot_rank, spot_returns, spot_returns**2, covariance, hurst_exponents, rsi, distance_from_max, distance_from_min])
         state = np.concatenate(
             [stock_state, self.net_position_weights, self.model_portfolio]
         )

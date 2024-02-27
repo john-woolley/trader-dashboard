@@ -25,7 +25,7 @@ Note:
 For more information, refer to the stable_baselines3 documentation on
 vectorized environments.
 """
-
+import asyncio
 import multiprocessing as mp
 import warnings
 from collections import OrderedDict
@@ -36,7 +36,7 @@ import numpy as np
 from gymnasium import spaces
 from hashlib import md5
 from random import uniform
-from src.db import Workers, Jobs
+from src.db import Workers
 
 from stable_baselines3.common.vec_env.base_vec_env import (
     CloudpickleWrapper,
@@ -59,6 +59,8 @@ def _worker(
 
     parent_remote.close()
     env = _patch_env(env_fn_wrapper.var())
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(env.start())
     reset_info: Optional[Dict[str, Any]] = {}
     while True:
         try:
@@ -166,7 +168,7 @@ class SanicVecEnv(VecEnv):
                 workers=1,
                 restartable=True,
             )
-            Workers.add(worker_name, jobname)
+            # Workers.add(worker_name, jobname)
         self.remotes[0].send(("get_spaces", None))
         observation_space, action_space = self.remotes[0].recv()
 

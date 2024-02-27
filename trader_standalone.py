@@ -64,7 +64,7 @@ if __name__ == "__main__":
             env,
             policy_kwargs=policy_kwargs,
             verbose=0,
-            batch_size=512,
+            batch_size=1,
             use_sde=True,
             device="cuda",
         )
@@ -91,4 +91,4 @@ if __name__ == "__main__":
             if done:
                 break
         test_render_handle = f"test_render_{i}.csv"
-        env_test.get_render().to_csv(test_render_handle)
+        env_test.get_render().write_csv(test_render_handle)

@@ -6,5 +6,6 @@ venv/
 src/UNKNOWN.egg-info/
 src/__pycache__/
 events.outs.tfevents.*
-log/SAC*
+log/*
 events.out.tfevents.*
+minikube-linux-amd64
