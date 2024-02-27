@@ -33,10 +33,8 @@ from src.sanic_vec_env import SanicVecEnv
 from src.trader import Trader
 from src.render_gfx import get_rewards_curve_figure
 
-CONN = "postgresql+psycopg2://trader_dashboard@0.0.0.0:5432/trader_dashboard"
 Sanic.start_method = "fork"
 main_app = Sanic(__name__)
-main_app.config["RESPONSE_TIMEOUT"] = 1e6
 app_path = os.path.dirname(__file__)
 main_app.static("/static", os.path.join(app_path, "static"))
 log_dir = os.path.join(app_path, "log")
@@ -57,7 +55,6 @@ async def start_handler(request: Request):
     logger.info("Starting training")
     table_name = args.get("table_name")
     jobname = args.get("jobname", "default")
-    start_i = int(args.get("i", 0))
     cv_periods = await db.CVData.get_cv_no_chunks(table_name)
     await db.Jobs.add(jobname)
     logger.info(
@@ -65,16 +62,26 @@ async def start_handler(request: Request):
         table_name,
         cv_periods,
     )
+    coro = manage_training(args, request, cv_periods)
+    asyncio.get_event_loop().create_task(coro)
+    return json({"status": "success"})
+
+
+async def manage_training(args, request, cv_periods):
+    table_name = args.get("table_name")
+    jobname = args.get("jobname", "default")
+    start_i = int(args.get("i", 0))
     for i in range(start_i, cv_periods - 1):
         logger.info("Starting training on fold %i of %i", i, cv_periods)
-        train_cv_period(args, i, request)
+        await train_cv_period(args, i, request)
         await validate_cv_period(args, i)
     redirect_summary = request.app.url_for(
         "get_job_summary", jobname=jobname, table_name=table_name
-        )
+    )
     return redirect(redirect_summary)
 
-def train_cv_period(args, i, request):
+
+async def train_cv_period(args, i, request):
     """
     Train the model on a specific fold of the cross-validation period.
 
@@ -128,7 +135,7 @@ def train_cv_period(args, i, request):
         "MlpPolicy",
         env,
         policy_kwargs=policy_kwargs,
-        verbose=1,
+        verbose=0,
         batch_size=batch_size,
         use_sde=use_sde,
         device=device,
@@ -185,13 +192,15 @@ async def validate_cv_period(args, i):
     episode_starts = np.ones((num_envs,), dtype=bool)
     while True:
         action, lstm_states = model_test.predict(
-            obs, state=lstm_states, episode_start=episode_starts,
+            obs,
+            state=lstm_states,
+            episode_start=episode_starts,
         )
         obs, _, done, _ = vec_env.step(action)
         if done:
             break
     render_data = env_test.get_render()
-    await db.RenderData.add(table_name, render_data, i+1)
+    await db.RenderData.add(table_name, render_data, i + 1)
     del model_test
     gc.collect()
     torch.cuda.empty_cache()
@@ -283,6 +292,24 @@ async def upload_csv(request: Request):
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(input_file.body.decode("utf-8"))
     logger.info("Uploaded %s to %s", input_file.name, file_path)
+    coro = manage_csv_db_upload(file_path, output_path, ffill, parse_dates)
+    asyncio.get_event_loop().create_task(coro)
+    return json({"status": "success"})
+
+
+async def manage_csv_db_upload(file_path, output_path, ffill, parse_dates):
+    """
+    Uploads a CSV file, saves it to a specified output path,
+    and inserts its contents into a database as a raw table.
+
+    Args:
+        request (Request): The request object containing the file path,
+        output path, parse_dates flag, and index_col.
+
+    Returns:
+        dict: A dictionary with the status of the upload process.
+    """
+    logger.info("Uploading %s to %s", file_path, output_path)
     df = pl.read_csv(file_path, try_parse_dates=parse_dates)
     if "" in df.columns:
         df = df.drop("")
@@ -355,9 +382,7 @@ async def get_job_summary(request: Request):
     table_name = request.args.get("table_name")
     returns, dates = await get_validation_returns(table_name)
     returns_index = 100 * returns.cum_sum().exp()
-    drawdown = 100 * (
-        returns_index - returns_index.cum_max()
-        ) / returns_index.cum_max()
+    drawdown = 100 * (returns_index - returns_index.cum_max()) / returns_index.cum_max()
     chart = await get_returns_drawdown_chart(returns_index, drawdown, dates)
     sharpe_ratio = returns.mean() / returns.std()
     return json(
@@ -369,8 +394,8 @@ async def get_job_summary(request: Request):
 
 
 async def get_returns_drawdown_chart(
-        returns_index: pl.Series, drawdown: pl.Series, dates: pl.Series
-        ):
+    returns_index: pl.Series, drawdown: pl.Series, dates: pl.Series
+):
     """
     Get a chart of the returns and drawdown.
 
@@ -396,7 +421,7 @@ async def get_returns_drawdown_chart(
         height=400,
     )
     return fig
-    
+
 
 async def get_validation_returns(table_name):
     """
@@ -413,11 +438,9 @@ async def get_validation_returns(table_name):
     date_accumulator = []
     for i in range(1, no_chunks):
         render = await db.RenderData.read(table_name, i)
-        render = (
-            render.with_columns(
-                pl.col("market_value").log().diff().alias("returns")
-                )
-            )
+        render = render.with_columns(
+            pl.col("market_value").log().diff().alias("returns")
+        )
         returns = render["returns"]
         dates = render["Date"]
         accumulator.append(returns)
@@ -442,6 +465,22 @@ async def prepare_data(request: Request):
     table_name = request.args.get("table_name")
     no_chunks = int(request.args.get("no_chunks", 0))
     chunk_size = int(request.args.get("chunk_size", 1000))
+    coro = manage_prepare_data(table_name, no_chunks, chunk_size)
+    asyncio.get_event_loop().create_task(coro)
+    return json({"status": "success"})
+
+
+async def manage_prepare_data(table_name, no_chunks, chunk_size):
+    """
+    Prepare the data for training.
+
+    Args:
+        request (Request): The request object.
+
+    Returns:
+        dict: A dictionary indicating the status of the operation.
+    """
+    logger.info("Preparing data")
     if not no_chunks:
         await db.RawData.chunk(table_name, chunk_size=chunk_size)
         no_chunks = await db.CVData.get_cv_no_chunks(table_name)

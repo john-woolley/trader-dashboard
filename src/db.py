@@ -6,6 +6,7 @@ retrieving data, and managing jobs and workers.
 """
 import asyncio
 import sqlalchemy as sa
+
 # import psycopg2
 import asyncpg
 import polars as pl
@@ -17,10 +18,14 @@ from sqlalchemy import MetaData, Table
 
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import socket
 
 
 CONN = f"postgresql+asyncpg://trader_dashboard:psltest@postgres:5432/trader_dashboard"
-SYNC_CONN = f"postgresql+psycopg2://trader_dashboard:psltest@postgres:5432/trader_dashboard"
+SYNC_CONN = (
+    f"postgresql+psycopg2://trader_dashboard:psltest@postgres:5432/trader_dashboard"
+)
+
 
 class DBConnection:
     @staticmethod
@@ -33,11 +38,12 @@ class DBConnection:
         )
         return c
 
+
 class DBBase:
     pass
 
-class RawData:
 
+class RawData:
     @classmethod
     async def get_engine(cls):
         return create_async_engine(CONN)
@@ -111,7 +117,9 @@ class RawData:
         return df.lazy()
 
     @classmethod
-    async def chunk(cls, table_name: str, chunk_size: int = 1000, no_chunks: int = 0) -> list:
+    async def chunk(
+        cls, table_name: str, chunk_size: int = 1000, no_chunks: int = 0
+    ) -> list:
         """
         Chunk the raw table data into smaller chunks and insert them into the
         database table.
@@ -189,11 +197,9 @@ class RawData:
 
 
 class Jobs:
-
     @classmethod
     async def get_engine(cls):
         return create_async_engine(CONN)
-
 
     @classmethod
     async def get_metadata(cls) -> MetaData:
@@ -218,7 +224,7 @@ class Jobs:
         async with conn.begin() as conn:
             try:
                 table = await conn.run_sync(
-                    lambda conn: sa.Table('jobs', sa.MetaData(), autoload_with=conn)
+                    lambda conn: sa.Table("jobs", sa.MetaData(), autoload_with=conn)
                 )
 
             except sa.exc.NoSuchTableError:
@@ -230,7 +236,6 @@ class Jobs:
                     sa.Column("status", sa.String),
                 )
         return table
-
 
     @classmethod
     async def create(cls):
@@ -285,7 +290,6 @@ class Jobs:
 
 
 class Workers:
-
     @classmethod
     async def get_engine(cls):
         return create_async_engine(CONN)
@@ -306,14 +310,14 @@ class Workers:
         async with conn.begin() as conn:
             await conn.run_sync(metadata.reflect)
         return metadata
-    
+
     @classmethod
     async def get_jobs_table(cls, metadata: MetaData) -> Table:
         conn = await cls.get_engine()
         async with conn.begin() as conn:
             try:
                 jobs_table = await conn.run_sync(
-                    lambda conn: sa.Table('jobs', sa.MetaData(), autoload_with=conn)
+                    lambda conn: sa.Table("jobs", sa.MetaData(), autoload_with=conn)
                 )
             except sa.exc.NoSuchTableError:
                 jobs_table = sa.Table(
@@ -331,7 +335,7 @@ class Workers:
         async with conn.begin() as conn:
             try:
                 table = await conn.run_sync(
-                    lambda conn: sa.Table('workers', sa.MetaData(), autoload_with=conn)
+                    lambda conn: sa.Table("workers", sa.MetaData(), autoload_with=conn)
                 )
             except sa.exc.NoSuchTableError:
                 table = sa.Table(
@@ -339,7 +343,9 @@ class Workers:
                     metadata,
                     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
                     sa.Column(
-                        "job_id", sa.Integer, sa.ForeignKey(jobs_table.c.id, ondelete="CASCADE")
+                        "job_id",
+                        sa.Integer,
+                        sa.ForeignKey(jobs_table.c.id, ondelete="CASCADE"),
                     ),
                     sa.Column("name", sa.String),
                     sa.Column("status", sa.String),
@@ -383,9 +389,7 @@ class Workers:
         async with conn.begin() as conn:
             metadata = await cls.get_metadata()
             jobs_table = await cls.get_jobs_table(metadata)
-            job_query = sa.select(jobs_table.c.id).where(
-                jobs_table.c.name == jobname
-            )
+            job_query = sa.select(jobs_table.c.id).where(jobs_table.c.name == jobname)
             fetch = await conn.execute(job_query)
             fetched = fetch.fetchone()
             assert fetched is not None, f"Job {jobname} not found"
@@ -476,8 +480,8 @@ class Workers:
             await conn.run_sync(table.drop, checkfirst=True)
             await conn.commit()
 
-class CVData:
 
+class CVData:
     @classmethod
     async def get_engine(cls):
         return create_async_engine(CONN)
@@ -505,7 +509,7 @@ class CVData:
         async with conn.begin() as conn:
             try:
                 table = await conn.run_sync(
-                    lambda conn: sa.Table('cv_data', sa.MetaData(), autoload_with=conn)
+                    lambda conn: sa.Table("cv_data", sa.MetaData(), autoload_with=conn)
                 )
             except sa.exc.NoSuchTableError:
                 table = sa.Table(
@@ -690,7 +694,6 @@ class CVData:
 
 
 class StdCVData:
-
     @classmethod
     async def get_engine(cls):
         return create_async_engine(CONN)
@@ -711,14 +714,16 @@ class StdCVData:
         async with conn.begin() as conn:
             await conn.run_sync(metadata.reflect)
         return metadata
-    
+
     @classmethod
     async def get_table(cls, metadata: MetaData) -> Table:
         conn = await cls.get_engine()
         async with conn.begin() as conn:
             try:
                 table = await conn.run_sync(
-                    lambda conn: sa.Table('std_cv_data', sa.MetaData(), autoload_with=conn)
+                    lambda conn: sa.Table(
+                        "std_cv_data", sa.MetaData(), autoload_with=conn
+                    )
                 )
             except sa.exc.NoSuchTableError:
                 table = sa.Table(
@@ -824,7 +829,6 @@ class StdCVData:
 
 
 class RenderData:
-
     @classmethod
     async def get_engine(cls):
         return create_async_engine(CONN)
@@ -845,14 +849,16 @@ class RenderData:
         async with conn.begin() as conn:
             await conn.run_sync(metadata.reflect)
         return metadata
-    
+
     @classmethod
     async def get_table(cls, metadata: MetaData) -> Table:
         conn = await cls.get_engine()
         async with conn.begin() as conn:
             try:
                 table = await conn.run_sync(
-                    lambda conn: sa.Table('render_data', sa.MetaData(), autoload_with=conn)
+                    lambda conn: sa.Table(
+                        "render_data", sa.MetaData(), autoload_with=conn
+                    )
                 )
             except sa.exc.NoSuchTableError:
                 table = sa.Table(
@@ -954,7 +960,7 @@ class RenderData:
         assert fetched is not None, f"Data not found for {table_name} chunk {i}"
         res = fetched[-1].data
         return res
-    
+
     @classmethod
     async def read(cls, table_name: str, i: int) -> pl.DataFrame:
         """
@@ -970,8 +976,6 @@ class RenderData:
         blob = await cls.get(table_name, i)
         df = cloudpickle.loads(blob)
         return df
-    
-
 
 
 async def remove_table_name_from_cv_table(table_name: str) -> None:
@@ -1053,6 +1057,7 @@ def get_job_worker_mapping():
             mapping[job].append(worker)
     conn.close()
     return mapping
+
 
 async def main():
     await Workers.drop()
