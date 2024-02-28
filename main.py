@@ -32,6 +32,7 @@ from src import db
 from src.sanic_vec_env import SanicVecEnv
 from src.trader import Trader
 from src.render_gfx import get_rewards_curve_figure
+from src.memoryqueue import MemoryQueue, Job
 
 Sanic.start_method = "fork"
 main_app = Sanic(__name__)
@@ -40,17 +41,70 @@ main_app.static("/static", os.path.join(app_path, "static"))
 log_dir = os.path.join(app_path, "log")
 
 
+
+@main_app.main_process_start
+async def main_process_start(app):
+    sanic_ver = sanic.__version__
+    logger.info("Created server process running Sanic Version %s", sanic_ver)
+    logger.debug("Main process started")
+    app.shared_ctx.mp_ctx = mp.get_context("spawn")
+    logger.debug("Created shared context")
+    app.shared_ctx.hallpass = mp.Semaphore()
+    app.shared_ctx.hallpass.acquire()
+    app.shared_ctx.queue = MemoryQueue(app.shared_ctx.mp_ctx)
+    await db.RenderData.drop()
+    logger.debug("Dropped old render data table")
+    await db.StdCVData.drop()
+    logger.debug("Dropped old standard cv data table")
+    await db.CVData.drop()
+    logger.debug("Dropped old raw data table")
+    await db.Workers.drop()
+    logger.debug("Dropped old workers table")
+    await db.Jobs.drop()
+    logger.debug("Dropped old jobs table")
+    await db.Jobs.create()
+    logger.debug("Created new jobs table")
+    await db.Workers.create()
+    logger.debug("Created new workers table")
+    await db.CVData.create()
+    logger.debug("Created new cv data table")
+    await db.StdCVData.create()
+    logger.debug("Created new standard cv data table")
+    await db.RenderData.create()
+    logger.debug("Created new render data table")
+
+
+@main_app.main_process_ready
+async def main_process_ready(app: Sanic):
+    loop = asyncio.get_running_loop()
+    def gpu_allocator(gpu_queue: MemoryQueue):
+        gpu_funs = {
+            "manage_training": manage_training,
+        }
+        while True:
+            next_job = gpu_queue.get()
+            if next_job:
+                current_gpu_usage = torch.cuda.memory_allocated()
+                gpu_capacity = torch.cuda.get_device_properties(0).total_memory
+                if current_gpu_usage + next_job.memory_usage <= gpu_capacity:
+                    fn = gpu_funs[next_job.fn_name]
+                    args = next_job.args
+                    cv_periods = next_job.cv_periods
+                    coro = fn(args, cv_periods, app)
+                    asyncio.run(coro, loop)
+                else:
+                    gpu_queue.add(next_job)
+    app.manager.manage(
+        ident="GPUAllocator",
+        func=gpu_allocator,
+        kwargs={'gpu_queue': app.shared_ctx.gpu_queue}
+    )
+    global VecEnv 
+    VecEnv = partial(SanicVecEnv, sanic_app=app)
+
+
 @main_app.get("/start")
 async def start_handler(request: Request):
-    """
-    Handles the start request for training.
-
-    Args:
-        request (Request): The request object containing the run parameters.
-
-    Returns:
-        A redirect to the summary page.
-    """
     args = request.args
     logger.info("Starting training")
     table_name = args.get("table_name")
@@ -62,35 +116,39 @@ async def start_handler(request: Request):
         table_name,
         cv_periods,
     )
-    coro = manage_training(args, request, cv_periods)
-    asyncio.get_event_loop().create_task(coro)
+    coro = manage_training(args, cv_periods, main_app)
+    task = asyncio.get_event_loop().create_task(coro)
     return json({"status": "success"})
 
 
-async def manage_training(args, request, cv_periods):
-    table_name = args.get("table_name")
+async def manage_training(args, cv_periods, app):
     jobname = args.get("jobname", "default")
+    await db.Jobs.start(jobname)
     start_i = int(args.get("i", 0))
     for i in range(start_i, cv_periods - 1):
         logger.info("Starting training on fold %i of %i", i, cv_periods)
-        await train_cv_period(args, i, request)
+        chunk_job_train = f"{jobname}_train_{i}"
+        chunk_job_validate = f"{jobname}_validate_{i}"
+        await db.Jobs.add(chunk_job_train)
+        await train_cv_period(args, i, app)
+        await db.Jobs.add(chunk_job_validate)
         await validate_cv_period(args, i)
-    redirect_summary = request.app.url_for(
-        "get_job_summary", jobname=jobname, table_name=table_name
-    )
-    return redirect(redirect_summary)
 
+    await db.Jobs.complete(jobname)
 
-async def train_cv_period(args, i, request):
-    """
-    Train the model on a specific fold of the cross-validation period.
+@main_app.get("/get_job_status")
+async def get_job_status(request: Request):
+    jobname = request.args.get("jobname", "default")
+    status = await db.Jobs.get(jobname)
+    return json({"status": status})
 
-    Args:
-        request (Request): The request object containing the training parameters.
+@main_app.get("/get_jobs")
+async def get_jobs(request: Request):
+    jobs = await db.Jobs.get_all()
+    res = {job[0]: job[1] for job in jobs}
+    return json({"jobs": res})
 
-    Returns:
-        A continuation of the training process.
-    """
+async def train_cv_period(args, i, app):
     table_name = args.get("table_name")
     ncpu = int(args.get("ncpu", 64))
     render_mode = args.get("render_mode", None)
@@ -109,6 +167,8 @@ async def train_cv_period(args, i, request):
     model_name = args.get("model_name", "ppo")
     risk_aversion = float(args.get("risk_aversion", 0.9))
     model = PPO if model_name == "ppo" else SAC
+    chunk_job_train = f"{jobname}_train_{i}"
+    await db.Jobs.start(chunk_job_train)
     try:
         env_fn = partial(
             Trader,
@@ -119,7 +179,7 @@ async def train_cv_period(args, i, request):
             risk_aversion=risk_aversion,
         )
         env_fns = [env_fn for _ in range(ncpu)]
-        env = SanicVecEnv(env_fns, request.app, jobname)
+        env = SanicVecEnv(sanic_app=app, env_fns=env_fns, jobname=jobname)
     except torch.cuda.OutOfMemoryError:
         logger.error("Error creating environment")
     env = VecMonitor(env, log_dir + f"/monitor/{jobname}/{i}/{i}")
@@ -151,25 +211,19 @@ async def train_cv_period(args, i, request):
         logger.error("Training interrupted")
         return redirect(f"/finished_training?jobname={jobname}?status=error")
     env.close()
-    return 0
+    await db.Jobs.complete(chunk_job_train)
 
 
-async def validate_cv_period(args, i):
-    """
-    Validate the table name and return the number of rows.
-
-    Args:
-        request (Request): The request object.
-
-    Returns:
-        A continuation of the training process.
-    """
+async def validate_cv_period(args, i: int):
     table_name = args.get("table_name")
     render_mode = args.get("render_mode", "human")
     render_mode = args.get("render_mode", None)
     model_name = args.get("model_name", "ppo")
     risk_aversion = float(args.get("risk_aversion", 0.9))
+    jobname = args.get("jobname", "default")
     model: Type[PPO] | Type[SAC] = PPO if model_name == "ppo" else SAC
+    chunk_job_validate = f"{jobname}_validate_{i}"
+    await db.Jobs.start(chunk_job_validate)
     env_test = Trader(
         table_name,
         i + 1,
@@ -204,79 +258,11 @@ async def validate_cv_period(args, i):
     del model_test
     gc.collect()
     torch.cuda.empty_cache()
-    return 0
-
-
-@main_app.main_process_start
-async def main_process_start(app):
-    """
-    Starts the main process of the trader dashboard application.
-
-    Args:
-        app: The Sanic application object.
-
-    Returns:
-        None
-    """
-    sanic_ver = sanic.__version__
-    logger.info("Created server process running Sanic Version %s", sanic_ver)
-    logger.debug("Main process started")
-    app.shared_ctx.mp_ctx = mp.get_context("forkserver")
-    logger.debug("Created shared context")
-    app.shared_ctx.hallpass = mp.Semaphore()
-    app.shared_ctx.hallpass.acquire()
-    app.shared_ctx.loop = asyncio.get_event_loop()
-    logger.debug("Created hallpass")
-    await db.RenderData.drop()
-    logger.debug("Dropped old render data table")
-    await db.StdCVData.drop()
-    logger.debug("Dropped old standard cv data table")
-    await db.CVData.drop()
-    logger.debug("Dropped old raw data table")
-    await db.Workers.drop()
-    logger.debug("Dropped old workers table")
-    await db.Jobs.drop()
-    logger.debug("Dropped old jobs table")
-    await db.Jobs.create()
-    logger.debug("Created new jobs table")
-    await db.Workers.create()
-    logger.debug("Created new workers table")
-    await db.CVData.create()
-    logger.debug("Created new cv data table")
-    await db.StdCVData.create()
-    logger.debug("Created new standard cv data table")
-    await db.RenderData.create()
-    logger.debug("Created new render data table")
-
-
-@main_app.main_process_ready
-async def main_process_ready(app):
-    """
-    Logs the main process as ready.
-
-    Args:
-        app: The Sanic application object.
-
-    Returns:
-        None
-    """
-    app.shared_ctx.hallpass.release()
-    logger.debug("Main process ready")
+    await db.Jobs.complete(chunk_job_validate)
 
 
 @main_app.post("/upload_csv")
 async def upload_csv(request: Request):
-    """
-    Uploads a CSV file, saves it to a specified output path,
-    and inserts its contents into a database as a raw table.
-
-    Args:
-        request (Request): The request object containing the file path,
-        output path, parse_dates flag, and index_col.
-
-    Returns:
-        dict: A dictionary with the status of the upload process.
-    """
     if not request.files:
         return json({"status": "error"})
     input_file = request.files.get("file")
@@ -293,22 +279,12 @@ async def upload_csv(request: Request):
         f.write(input_file.body.decode("utf-8"))
     logger.info("Uploaded %s to %s", input_file.name, file_path)
     coro = manage_csv_db_upload(file_path, output_path, ffill, parse_dates)
-    asyncio.get_event_loop().create_task(coro)
+    task = asyncio.get_event_loop().create_task(coro)
+    request.app.ctx.queue.put_nowait(task)
     return json({"status": "success"})
 
 
 async def manage_csv_db_upload(file_path, output_path, ffill, parse_dates):
-    """
-    Uploads a CSV file, saves it to a specified output path,
-    and inserts its contents into a database as a raw table.
-
-    Args:
-        request (Request): The request object containing the file path,
-        output path, parse_dates flag, and index_col.
-
-    Returns:
-        dict: A dictionary with the status of the upload process.
-    """
     logger.info("Uploading %s to %s", file_path, output_path)
     df = pl.read_csv(file_path, try_parse_dates=parse_dates)
     if "" in df.columns:
@@ -319,48 +295,8 @@ async def manage_csv_db_upload(file_path, output_path, ffill, parse_dates):
     logger.info("Inserted %s into database as raw table", output_path)
     return json({"status": "success"})
 
-
-@main_app.get("/get_jobs")
-def get_jobs(request: Request):
-    """
-    Get all jobs from the database.
-
-    Args:
-        request (Request): The request object.
-
-    Returns:
-        dict: A dictionary containing the jobs.
-    """
-    jobs = db.get_jobs()
-    return json({"jobs": jobs})
-
-
-@main_app.get("/get_workers")
-def get_workers(request: Request):
-    """
-    Get all workers from the database.
-
-    Args:
-        request (Request): The request object.
-
-    Returns:
-        dict: A dictionary containing the workers.
-    """
-    workers = db.get_workers()
-    return json({"workers": workers})
-
-
 @main_app.get("/get_test_render")
 async def get_test_render(request: Request):
-    """
-    Get the test render file for a specific job.
-
-    Args:
-        request (Request): The request object.
-
-    Returns:
-        dict: A dictionary containing the test render file.
-    """
     jobname = request.args.get("jobname", "default")
     chunk = request.args.get("chunk", 0)
     test_render: pl.DataFrame = await db.RenderData.read(jobname, chunk)
@@ -370,15 +306,6 @@ async def get_test_render(request: Request):
 
 @main_app.get("/get_job_summary")
 async def get_job_summary(request: Request):
-    """
-    Get the summary of a specific job.
-
-    Args:
-        request (Request): The request object.
-
-    Returns:
-        dict: A dictionary containing the summary of the job.
-    """
     table_name = request.args.get("table_name")
     returns, dates = await get_validation_returns(table_name)
     returns_index = 100 * returns.cum_sum().exp()
@@ -396,17 +323,6 @@ async def get_job_summary(request: Request):
 async def get_returns_drawdown_chart(
     returns_index: pl.Series, drawdown: pl.Series, dates: pl.Series
 ):
-    """
-    Get a chart of the returns and drawdown.
-
-    Args:
-        returns_index (np.ndarray): The returns index.
-        drawdown (np.ndarray): The drawdown.
-        dates (np.ndarray): The dates.
-
-    Returns:
-        figure: The figure of the returns and drawdown chart.
-    """
     fig = ApexChart(
         options={
             "chart": {"id": "returns-drawdown-chart"},
@@ -424,15 +340,6 @@ async def get_returns_drawdown_chart(
 
 
 async def get_validation_returns(table_name):
-    """
-    Get the validation returns for a specific job.
-
-    Args:
-        jobname (str): The name of the job.
-
-    Returns:
-        dict: A dictionary containing the validation returns.
-    """
     no_chunks = await db.CVData.get_cv_no_chunks(table_name)
     accumulator = []
     date_accumulator = []
@@ -452,56 +359,29 @@ async def get_validation_returns(table_name):
 
 @main_app.get("/prepare_data")
 async def prepare_data(request: Request):
-    """
-    Prepare the data for training.
-
-    Args:
-        request (Request): The request object.
-
-    Returns:
-        dict: A dictionary indicating the status of the operation.
-    """
     logger.info("Preparing data")
     table_name = request.args.get("table_name")
     no_chunks = int(request.args.get("no_chunks", 0))
     chunk_size = int(request.args.get("chunk_size", 1000))
     coro = manage_prepare_data(table_name, no_chunks, chunk_size)
-    asyncio.get_event_loop().create_task(coro)
+    task = asyncio.get_event_loop().create_task(coro)
     return json({"status": "success"})
 
 
 async def manage_prepare_data(table_name, no_chunks, chunk_size):
-    """
-    Prepare the data for training.
-
-    Args:
-        request (Request): The request object.
-
-    Returns:
-        dict: A dictionary indicating the status of the operation.
-    """
     logger.info("Preparing data")
     if not no_chunks:
         await db.RawData.chunk(table_name, chunk_size=chunk_size)
         no_chunks = await db.CVData.get_cv_no_chunks(table_name)
     else:
         await db.RawData.chunk(table_name, no_chunks=no_chunks)
-    for i in range(no_chunks):
-        await db.CVData.standardize(table_name, i)
+    coros = [db.CVData.standardize(table_name, i) for i in range(no_chunks)]
+    asyncio.gather(*coros)
     return json({"status": "success"})
 
 
 @main_app.get("/stop")
 def stop_handler(request: Request):
-    """
-    Stop the training for a specific job.
-
-    Args:
-        request (Request): The request object.
-
-    Returns:
-        dict: A dictionary indicating the status of the operation.
-    """
     jobname = request.args.get("jobname", "default")
     logger.info("Stopping training for job: %s", jobname)
     request.app.shared_ctx.hallpass.acquire()
@@ -521,12 +401,6 @@ def stop_handler(request: Request):
 
 @reactpy.component
 def button():
-    """
-    Renders a button element.
-
-    Returns:
-        reactpy.html.button: The rendered button element.
-    """
     logger.info("Rendering button")
     return reactpy.html.button({"on_click": start_handler}, "Click me!")
 

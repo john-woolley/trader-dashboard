@@ -25,6 +25,7 @@ Note:
 For more information, refer to the stable_baselines3 documentation on
 vectorized environments.
 """
+from functools import partial
 import asyncio
 import multiprocessing as mp
 import warnings
@@ -134,8 +135,8 @@ class SanicVecEnv(VecEnv):
 
     def __init__(
         self,
-        env_fns: List[Callable[[], gym.Env]],
         sanic_app: Sanic,
+        env_fns: List[Callable[[], gym.Env]],
         jobname: str,
         start_method: Optional[str] = None,
     ):
@@ -144,7 +145,7 @@ class SanicVecEnv(VecEnv):
         n_envs = len(env_fns)
 
         if start_method is None:
-            start_method = "spawn"
+            start_method = "fork"
         ctx = sanic_app.shared_ctx.mp_ctx
         pipes = [ctx.Pipe() for _ in range(n_envs)]
         self.remotes, self.work_remotes = zip(*pipes)

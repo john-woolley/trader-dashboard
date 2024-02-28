@@ -272,8 +272,54 @@ class Jobs:
         async with conn.begin() as conn:
             metadata = await cls.get_metadata()
             table = await cls.get_table(metadata)
-            ins = table.insert().values(name=job_name, status="idle")
+            ins = table.insert().values(name=job_name, status="pending")
             await conn.execute(ins)
+            await conn.commit()
+
+    @classmethod
+    async def start(cls, job_name: str) -> None:
+        """
+        Start a job in the database.
+
+        Args:
+            job_name (str): The name of the job to start.
+
+        Returns:
+            None
+        """
+        conn = await cls.get_engine()
+        metadata = await cls.get_metadata()
+        table = await cls.get_table(metadata)
+        query = (
+            update(table)
+            .where(table.c.name == job_name)
+            .values(status="running")
+        )
+        async with conn.begin() as conn:
+            await conn.execute(query)
+            await conn.commit()
+
+    @classmethod
+    async def complete(cls, job_name: str) -> None:
+        """
+        Complete a job in the database.
+
+        Args:
+            job_name (str): The name of the job to complete.
+
+        Returns:
+            None
+        """
+        conn = await cls.get_engine()
+        metadata = await cls.get_metadata()
+        table = await cls.get_table(metadata)
+        query = (
+            update(table)
+            .where(table.c.name == job_name)
+            .values(status="complete")
+        )
+        async with conn.begin() as conn:
+            await conn.execute(query)
             await conn.commit()
 
     @classmethod
@@ -287,6 +333,40 @@ class Jobs:
             table = await cls.get_table(metadata)
             await conn.run_sync(table.drop, checkfirst=True)
             await conn.commit()
+
+    @classmethod
+    async def get(cls, jobname):
+        """
+        Get the status of a job.
+
+        Args:
+            jobname (str): The name of the job.
+
+        Returns:
+            str: The status of the job.
+        """
+        conn = await cls.get_engine()
+        metadata = await cls.get_metadata()
+        table = await cls.get_table(metadata)
+        query = sa.select(table.c.status).where(table.c.name == jobname)
+        async with conn.begin() as conn:
+            fetch = await conn.execute(query)
+            status = fetch.fetchone()
+            return status[0]
+    
+    @classmethod
+    async def get_all(cls):
+        """
+        Gets all jobs and statuses from the database.
+        """
+        conn = await cls.get_engine()
+        metadata = await cls.get_metadata()
+        table = await cls.get_table(metadata)
+        query = sa.select(table.c.name, table.c.status)
+        async with conn.begin() as conn:
+            fetch = await conn.execute(query)
+            res = fetch.fetchall()
+            return res
 
 
 class Workers:
