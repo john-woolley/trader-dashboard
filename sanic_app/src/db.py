@@ -18,11 +18,10 @@ CONN = f"postgresql+psycopg2://trader_dashboard:psltest@postgres:5432/trader_das
 
 
 class DBBase:
-
     @classmethod
     def get_engine(cls):
         return sa.create_engine(CONN).connect()
-    
+
     @classmethod
     def get_metadata(cls) -> MetaData:
         """
@@ -38,7 +37,7 @@ class DBBase:
         metadata = sa.MetaData()
         metadata.reflect(bind=conn)
         return metadata
-    
+
     @classmethod
     def get_table(cls, metadata: MetaData) -> Table:
         """
@@ -69,7 +68,7 @@ class DBBase:
         conn = cls.get_engine()
         df = pl.read_database(query, conn)
         return df.lazy()
-    
+
     @classmethod
     def create(cls):
         """
@@ -100,8 +99,8 @@ class DBBase:
         table.drop(checkfirst=True, bind=conn)
         conn.commit()
 
-class RawData(DBBase):
 
+class RawData(DBBase):
     @classmethod
     def insert(cls, df: pl.DataFrame, table_name: str) -> None:
         """
@@ -117,9 +116,7 @@ class RawData(DBBase):
         df.write_database(table_name, CONN, if_table_exists="replace")
 
     @classmethod
-    def chunk(
-        cls, table_name: str, chunk_size: int = 1000, no_chunks: int = 0
-    ) -> list:
+    def chunk(cls, table_name: str, chunk_size: int = 1000, no_chunks: int = 0) -> list:
         """
         Chunk the raw table data into smaller chunks and insert them into the
         database table.
@@ -195,18 +192,12 @@ class RawData(DBBase):
             blob = cloudpickle.dumps(chunk.collect())
             CVData.add(table_name, blob, i)
 
-    
-
 
 class Jobs(DBBase):
     @classmethod
     def get_table(cls, metadata: MetaData) -> Table:
         try:
-            table = sa.Table(
-                "jobs",
-                metadata,
-                autoload_with=cls.get_engine()
-            )
+            table = sa.Table("jobs", metadata, autoload_with=cls.get_engine())
         except sa.exc.NoSuchTableError:
             table = sa.Table(
                 "jobs",
@@ -216,7 +207,6 @@ class Jobs(DBBase):
                 sa.Column("status", sa.String),
             )
         return table
-
 
     @classmethod
     def add(cls, job_name: str) -> None:
@@ -250,11 +240,7 @@ class Jobs(DBBase):
         conn = cls.get_engine()
         metadata = cls.get_metadata()
         table = cls.get_table(metadata)
-        query = (
-            update(table)
-            .where(table.c.name == job_name)
-            .values(status="running")
-        )
+        query = update(table).where(table.c.name == job_name).values(status="running")
         conn.execute(query)
         conn.commit()
 
@@ -272,11 +258,7 @@ class Jobs(DBBase):
         conn = cls.get_engine()
         metadata = cls.get_metadata()
         table = cls.get_table(metadata)
-        query = (
-            update(table)
-            .where(table.c.name == job_name)
-            .values(status="complete")
-        )
+        query = update(table).where(table.c.name == job_name).values(status="complete")
         conn.execute(query)
         conn.commit()
 
@@ -298,7 +280,7 @@ class Jobs(DBBase):
         fetch = conn.execute(query)
         status = fetch.fetchone()
         return status[0]
-    
+
     @classmethod
     def get_all(cls):
         """
@@ -314,16 +296,11 @@ class Jobs(DBBase):
 
 
 class Workers(DBBase):
-
     @classmethod
     def get_jobs_table(cls, metadata: MetaData) -> Table:
         conn = cls.get_engine()
         try:
-            jobs_table = sa.Table(
-                "jobs",
-                metadata,
-                autoload_with=conn
-            )
+            jobs_table = sa.Table("jobs", metadata, autoload_with=conn)
         except sa.exc.NoSuchTableError:
             jobs_table = sa.Table(
                 "jobs",
@@ -339,11 +316,7 @@ class Workers(DBBase):
         conn = cls.get_engine()
         jobs_table = cls.get_jobs_table(metadata)
         try:
-            table = sa.Table(
-                "workers",
-                metadata,
-                autoload_with=conn
-            )
+            table = sa.Table("workers", metadata, autoload_with=conn)
         except sa.exc.NoSuchTableError:
             table = sa.Table(
                 "workers",
@@ -358,7 +331,6 @@ class Workers(DBBase):
                 sa.Column("status", sa.String),
             )
         return table
-
 
     @classmethod
     def add(cls, worker_name: str, jobname: str) -> None:
@@ -456,11 +428,7 @@ class CVData(DBBase):
     def get_table(cls, metadata: MetaData) -> Table:
         conn = cls.get_engine()
         try:
-            table = sa.Table(
-                "cv_data",
-                metadata,
-                autoload_with=conn
-            )
+            table = sa.Table("cv_data", metadata, autoload_with=conn)
         except sa.exc.NoSuchTableError:
             table = sa.Table(
                 "cv_data",
@@ -491,8 +459,6 @@ class CVData(DBBase):
         ins = table.insert().values(table_name=table_name, data=data, chunk=i)
         conn.execute(ins)
         conn.commit()
-
-
 
     @classmethod
     def get(cls, table_name: str, i: int = 0) -> pl.LazyFrame:
@@ -614,11 +580,7 @@ class StdCVData(DBBase):
     def get_table(cls, metadata: MetaData) -> Table:
         conn = cls.get_engine()
         try:
-            table = sa.Table(
-                "std_cv_data",
-                metadata,
-                autoload_with=conn
-            )
+            table = sa.Table("std_cv_data", metadata, autoload_with=conn)
         except sa.exc.NoSuchTableError:
             table = sa.Table(
                 "std_cv_data",
@@ -692,16 +654,11 @@ class StdCVData(DBBase):
 
 
 class RenderData(DBBase):
-
     @classmethod
     def get_table(cls, metadata: MetaData) -> Table:
         conn = cls.get_engine()
         try:
-            table = sa.Table(
-                "render_data",
-                metadata,
-                autoload_with=conn
-            )
+            table = sa.Table("render_data", metadata, autoload_with=conn)
         except sa.exc.NoSuchTableError:
             table = sa.Table(
                 "render_data",
@@ -712,7 +669,6 @@ class RenderData(DBBase):
                 sa.Column("data", sa.LargeBinary),
             )
         return table
-
 
     @classmethod
     def add(cls, table_name: str, data: pl.DataFrame, i: int) -> None:
@@ -860,7 +816,6 @@ def get_job_worker_mapping():
             mapping[job].append(worker)
     conn.close()
     return mapping
-
 
 
 if __name__ == "__main__":

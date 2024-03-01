@@ -22,23 +22,21 @@ logger = logging.getLogger(__name__)
 
 LOCK_EXPIRE = 60 * 10  # Lock expires in 10 minutes
 
+
+@celery_app.task
+def complete_job(result, jobname):
+    db.Jobs.complete(jobname)
+
+
 @contextmanager
 def memcache_lock():
     timeout_at = time.monotonic() + LOCK_EXPIRE - 3
-    # cache.add fails if the key already exists
-    status = cache.set("train_cpu_dump", LOCK_EXPIRE)
+    status = cache.set("gpu_cpu_dump", LOCK_EXPIRE)
     try:
         yield status
     finally:
-        # memcache delete is very slow, but we have to use it to take
-        # advantage of using add() for atomic locking
         if time.monotonic() < timeout_at and status:
-            # don't release the lock if we exceeded the timeout
-            # to lessen the chance of releasing an expired lock
-            # owned by someone else
-            # also don't release the lock if we didn't acquire it
-            cache.delete("train_cpu_dump")
-
+            cache.delete("gpu_cpu_dump")
 
 
 @celery_app.task
@@ -47,21 +45,25 @@ def manage_training(args, cv_periods):
     jobname = args.get("jobname", "default")
     db.Jobs.start(jobname)
     start_i = int(args.get("i", 0))
+
+    # Create a list of tasks for the chain
+    tasks = []
+
     for i in range(start_i, cv_periods - 1):
         chunk_job_train = f"{jobname}_train_{i}"
         chunk_job_validate = f"{jobname}_validate_{i}"
         db.Jobs.add(chunk_job_train)
         db.Jobs.add(chunk_job_validate)
-    for i in range(start_i, cv_periods - 1):
-        logger.info("Starting training on fold %i of %i of job %s",
-                     i, cv_periods, jobname)
-        train_cv_period(args, i)
-        validate_cv_period(args, i)
 
-    db.Jobs.complete(jobname)
+        # Append each task to the list
+        tasks.append(
+            chain(train_cv_period.s(args, i), validate_cv_period_chained.s(args, i))
+        )
+    chord(tasks)(complete_job.s(jobname))
 
 
-def train_cv_period(args, i):
+@celery_app.task(bind=True)
+def train_cv_period(self, args, i):
     table_name = args.get("table_name")
     ncpu = int(args.get("ncpu", 64))
     render_mode = args.get("render_mode", None)
@@ -73,6 +75,7 @@ def train_cv_period(args, i):
     jobname = args.get("jobname", "default")
     network_depth = int(args.get("network_depth", 4))
     network_width = []
+    cv_periods = int(args.get("cv_periods", 5))
     for j in range(network_depth):
         depth_j = int(args.get(f"network_width_{j}", 4096))
         network_width.append(depth_j)
@@ -80,6 +83,7 @@ def train_cv_period(args, i):
     risk_aversion = float(args.get("risk_aversion", 0.9))
     model = PPO if model_name == "ppo" else SAC
     chunk_job_train = f"{jobname}_train_{i}"
+    logger.info("Starting training on fold %i of %i of job %s", i, cv_periods, jobname)
     db.Jobs.start(chunk_job_train)
     try:
         env_fn = partial(
@@ -123,9 +127,11 @@ def train_cv_period(args, i):
             gc.collect()
             torch.cuda.empty_cache()
     db.Jobs.complete(chunk_job_train)
+    logger.info("Training on fold %i of %i of job %s complete", i, cv_periods, jobname)
 
 
-def validate_cv_period(args, i: int):
+@celery_app.task(bind=True)
+def validate_cv_period(self, args, i: int):
     table_name = args.get("table_name")
     render_mode = args.get("render_mode", "human")
     render_mode = args.get("render_mode", None)
@@ -134,6 +140,7 @@ def validate_cv_period(args, i: int):
     jobname = args.get("jobname", "default")
     model: Type[PPO] | Type[SAC] = PPO if model_name == "ppo" else SAC
     chunk_job_validate = f"{jobname}_validate_{i}"
+    logger.info("Starting validation on fold %i of job %s", i, jobname)
     db.Jobs.start(chunk_job_validate)
     env_test = Trader(
         table_name,
@@ -167,4 +174,10 @@ def validate_cv_period(args, i: int):
             del model_test
             gc.collect()
             torch.cuda.empty_cache()
-            db.Jobs.complete(chunk_job_validate)
+    db.Jobs.complete(chunk_job_validate)
+    logger.info("Validation on fold %i of job %s complete", i, jobname)
+
+
+@celery_app.task
+def validate_cv_period_chained(train_res, args, i):
+    return validate_cv_period(args, i)

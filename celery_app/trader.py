@@ -317,23 +317,23 @@ class Trader(gym.Env):
         while len(self.state_buffer) < self.buffer_len:
             self.state_buffer.append(state_frame)
         return self._get_observation(), {}
-    
+
     def _get_hurst_exponent(self, ts: np.ndarray) -> float:
-            """
-            Calculate the Hurst exponent for a given time series.
+        """
+        Calculate the Hurst exponent for a given time series.
 
-            Parameters:
-            - ts (np.ndarray): The time series for which the Hurst exponent
-                is to be calculated.
+        Parameters:
+        - ts (np.ndarray): The time series for which the Hurst exponent
+            is to be calculated.
 
-            Returns:
-            - float: The calculated Hurst exponent.
-            """
-            lags = range(2, self.buffer_len//2)
-            tau = [np.std(np.subtract(ts[lag:], ts[:-lag])) for lag in lags]
-            poly = np.polyfit(np.log(lags), np.log(tau), 1)
-            return poly[0]
-    
+        Returns:
+        - float: The calculated Hurst exponent.
+        """
+        lags = range(2, self.buffer_len // 2)
+        tau = [np.std(np.subtract(ts[lag:], ts[:-lag])) for lag in lags]
+        poly = np.polyfit(np.log(lags), np.log(tau), 1)
+        return poly[0]
+
     def _get_rsi(self, ts: np.ndarray) -> float:
         """
         Calculate the Relative Strength Index (RSI) for a given time series.
@@ -387,21 +387,27 @@ class Trader(gym.Env):
             covariance = np.corrcoef(spot_window[:, :, 0].T)[
                 np.triu_indices(self.no_symbols)
             ]
-            hurst_exponents = (np.array(
-                [
-                    self._get_hurst_exponent(spot_window[:, i, 0])
-                    for i in range(self.no_symbols)
-                ]
-            ) + (self.buffer_len - 1) * self.hurst_exponents) / self.buffer_len
+            hurst_exponents = (
+                np.array(
+                    [
+                        self._get_hurst_exponent(spot_window[:, i, 0])
+                        for i in range(self.no_symbols)
+                    ]
+                )
+                + (self.buffer_len - 1) * self.hurst_exponents
+            ) / self.buffer_len
             self.hurst_exponents = hurst_exponents
-            rsi = (np.array(
-                [
-                    self._get_rsi(spot_window[:, i, 0])
-                    for i in range(self.no_symbols)
-                ]
-            ) + (self.buffer_len - 1) * self.rsi) / self.buffer_len
+            rsi = (
+                np.array(
+                    [
+                        self._get_rsi(spot_window[:, i, 0])
+                        for i in range(self.no_symbols)
+                    ]
+                )
+                + (self.buffer_len - 1) * self.rsi
+            ) / self.buffer_len
             self.rsi = rsi
-            distance_from_max  = np.max(spot_window[:, :, 0], axis=0) / spot
+            distance_from_max = np.max(spot_window[:, :, 0], axis=0) / spot
             distance_from_min = spot / np.min(spot_window[:, :, 0], axis=0)
         else:
             covariance = np.eye(self.no_symbols)[np.triu_indices(self.no_symbols)]
@@ -418,7 +424,19 @@ class Trader(gym.Env):
         else:
             spot_returns = np.zeros(self.no_symbols)
         spot_rank = get_percentile(spot, spot_window[:, :, 0], axis=0)
-        stock_state = np.concatenate([stock_state, spot_rank, spot_returns, spot_returns**2, covariance, hurst_exponents, rsi, distance_from_max, distance_from_min])
+        stock_state = np.concatenate(
+            [
+                stock_state,
+                spot_rank,
+                spot_returns,
+                spot_returns**2,
+                covariance,
+                hurst_exponents,
+                rsi,
+                distance_from_max,
+                distance_from_min,
+            ]
+        )
         state = np.concatenate(
             [stock_state, self.net_position_weights, self.model_portfolio]
         )
@@ -617,8 +635,7 @@ class Trader(gym.Env):
             for i in range(self.no_symbols)
         }
         action_dict = {
-            f"action_{self.symbols[i]}": self.action[i]
-            for i in range(self.no_symbols)
+            f"action_{self.symbols[i]}": self.action[i] for i in range(self.no_symbols)
         }
         state_dict.update(net_lev_dict)
         state_dict.update(action_dict)

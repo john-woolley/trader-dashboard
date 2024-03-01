@@ -1,7 +1,7 @@
-
 from multiprocessing import Queue, Lock, Value
 
 import torch
+
 
 class Job:
     def __init__(self, job_id, memory_usage, fn_name, args, cv_periods):
@@ -10,6 +10,7 @@ class Job:
         self.fn_name = fn_name
         self.args = args
         self.cv_periods = cv_periods
+
 
 class MemoryQueue:
     def __init__(self, ctx):
@@ -27,7 +28,9 @@ class MemoryQueue:
                 self.jobs_queue.put(job)
                 self.estimated_memory_usage.value += job.memory_usage
             else:
-                print(f"Job {job.job_id} exceeds available GPU memory. Not added to the queue.")
+                print(
+                    f"Job {job.job_id} exceeds available GPU memory. Not added to the queue."
+                )
 
     def get(self):
         with self.lock:

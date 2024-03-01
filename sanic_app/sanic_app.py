@@ -31,9 +31,9 @@ from src.memoryqueue import MemoryQueue, Job
 
 celery_app = Celery(
     "tasks",
-    broker = "redis://localhost:6379/0",
+    broker="redis://localhost:6379/0",
     backend="redis://localhost:6379/0",
-    )
+)
 
 Sanic.start_method = "fork"
 main_app = Sanic(__name__)
@@ -80,12 +80,14 @@ def get_gpu_usage():
     info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
     return info.used
 
+
 def exponential_backoff(retry_count, base_delay=60, max_delay=3600):
-    delay = min(base_delay * (2 ** retry_count), max_delay)
+    delay = min(base_delay * (2**retry_count), max_delay)
     return delay
 
+
 def gpu_allocator(gpu_queue: MemoryQueue, hallpass: mp.Semaphore):
-    retry_count = 0 
+    retry_count = 0
     while True:
         next_job = gpu_queue.get()
         if next_job:
@@ -101,9 +103,7 @@ def gpu_allocator(gpu_queue: MemoryQueue, hallpass: mp.Semaphore):
                         fn = next_job.fn_name
                         args = next_job.args
                         cv_periods = next_job.cv_periods
-                        celery_app.send_task(
-                            fn, args=(args, cv_periods)
-                        )
+                        celery_app.send_task(fn, args=(args, cv_periods))
                         retry_count = 0
                     except torch.cuda.OutOfMemoryError:
                         logger.error("Error processing job")
@@ -113,8 +113,10 @@ def gpu_allocator(gpu_queue: MemoryQueue, hallpass: mp.Semaphore):
                         hallpass.release()
                 else:
                     logger.info(
-                        ("Insufficient GPU memory,"
-                         f"waiting for next job. Retry count: {retry_count}")
+                        (
+                            "Insufficient GPU memory,"
+                            f"waiting for next job. Retry count: {retry_count}"
+                        )
                     )
                     gpu_queue.add(next_job)
                     time.sleep(exponential_backoff(retry_count))
@@ -123,30 +125,29 @@ def gpu_allocator(gpu_queue: MemoryQueue, hallpass: mp.Semaphore):
                 logger.error(f"Error processing job: {str(e)}")
                 retry_count += 1
 
+
 @main_app.main_process_ready
 async def main_process_ready(app: Sanic):
     app.manager.manage(
         ident="GPUAllocator",
         func=gpu_allocator,
-        kwargs={'gpu_queue': app.shared_ctx.gpu_queue,
-                'hallpass': app.shared_ctx.hallpass},
+        kwargs={
+            "gpu_queue": app.shared_ctx.gpu_queue,
+            "hallpass": app.shared_ctx.hallpass,
+        },
     )
 
 
-def estimate_gpu_usage(
-    table_name, 
-    network_depth, 
-    network_width, 
-    buffer_len
-) -> int:
+def estimate_gpu_usage(table_name, network_depth, network_width, buffer_len) -> int:
     data = db.StdCVData.read(table_name, 0)
     no_symbols = len(data.select("ticker").unique().collect().to_series())
     no_features = 44 * no_symbols + 39
     no_actions = no_symbols + 2
     no_obs = buffer_len * no_features
-    no_parameters = (no_obs + no_actions) + network_width ** network_depth
+    no_parameters = (no_obs + no_actions) + network_width**network_depth
     sizeof_float = 64
     return 20 * no_parameters * sizeof_float
+
 
 @main_app.get("/start")
 async def start_handler(request: Request):
@@ -155,9 +156,9 @@ async def start_handler(request: Request):
     table_name = args.get("table_name")
     jobname = args.get("jobname", "default")
     network_depth = int(args.get("network_depth", 4))
-    network_width = max([
-        int(args.get(f"network_width_{i}", 4096)) for i in range(network_depth)
-    ])
+    network_width = max(
+        [int(args.get(f"network_width_{i}", 4096)) for i in range(network_depth)]
+    )
     cv_periods = db.CVData.get_cv_no_chunks(table_name)
     gpu_usage = estimate_gpu_usage(table_name, network_depth, network_width, 10)
     db.Jobs.add(jobname)
@@ -176,17 +177,20 @@ async def start_handler(request: Request):
     request.app.shared_ctx.gpu_queue.add(gpu_job)
     return json({"status": "success"})
 
+
 @main_app.get("/get_job_status")
 async def get_job_status(request: Request):
     jobname = request.args.get("jobname", "default")
     status = db.Jobs.get(jobname)
     return json({"status": status})
 
+
 @main_app.get("/get_jobs")
 async def get_jobs(request: Request):
     jobs = db.Jobs.get_all()
     res = {job[0]: job[1] for job in jobs}
     return json({"jobs": res})
+
 
 @main_app.post("/upload_csv")
 async def upload_csv(request: Request):
@@ -222,6 +226,7 @@ async def manage_csv_db_upload(file_path, output_path, ffill, parse_dates):
     logger.info("Inserted %s into database as raw table", output_path)
     return json({"status": "success"})
 
+
 @main_app.get("/get_test_render")
 async def get_test_render(request: Request):
     jobname = request.args.get("jobname", "default")
@@ -236,9 +241,7 @@ async def get_job_summary(request: Request):
     table_name = request.args.get("table_name")
     returns, dates = await get_validation_returns(table_name)
     returns_index = 100 * returns.cum_sum().exp()
-    drawdown = (
-        100 * (returns_index - returns_index.cum_max()) / returns_index.cum_max()
-        )
+    drawdown = 100 * (returns_index - returns_index.cum_max()) / returns_index.cum_max()
     chart = await get_returns_drawdown_chart(returns_index, drawdown, dates)
     sharpe_ratio = returns.mean() / returns.std()
     return json(
@@ -348,5 +351,3 @@ configure(main_app, react_app)
 
 if __name__ == "__main__":
     main_app.run(host="0.0.0.0", port=8004, debug=True, workers=16)
-    
-    
