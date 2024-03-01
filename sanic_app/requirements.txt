@@ -1,0 +1,15 @@
+sanic
+celery
+cloudpickle
+matplotlib
+reactpy[sanic]
+sqlalchemy
+psycopg2-binary
+pyfredapi
+torch
+polars
+reactpy_apexcharts
+pyarrow
+nvidia-ml-py3
+stable_baselines3
+redis

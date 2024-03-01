@@ -9,3 +9,4 @@ events.outs.tfevents.*
 log/*
 events.out.tfevents.*
 minikube-linux-amd64
+data/*

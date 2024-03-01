@@ -1,0 +1,13 @@
+celery
+stable_baselines3
+scipy
+matplotlib
+sqlalchemy
+psycopg2-binary
+pyfredapi
+torch
+polars
+tensorboard
+scikit-learn
+pyarrow
+redis
