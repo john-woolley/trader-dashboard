@@ -101,6 +101,7 @@ class Trader(gym.Env):
     def __init__(
         self,
         table_name: str,
+        jobname: str,
         chunk: int,
         initial_balance: float = 1e5,
         n_lags=10,
@@ -137,6 +138,7 @@ class Trader(gym.Env):
         self.ep_length = ep_length
         self.initial_balance: float = initial_balance
         self.table_name = table_name
+        self.jobname = jobname
         self.chunk = chunk
         self.transaction_cost = transaction_cost
         self.current_step = 0
@@ -154,13 +156,13 @@ class Trader(gym.Env):
         self.rate = 0.01
         self.prev_portfolio_value = 0
         self.period = 0
-        self.data = db.StdCVData.read(self.table_name, self.chunk)
+        self.data = db.StdCVData.read(self.table_name, self.jobname, self.chunk)
         self.data = self.data.sort("date", "ticker")
         self.data = self.data.with_columns(
             pl.col("date").cast(pl.Date).alias("date"),
             pl.col("capex").truediv(pl.col("equity")).alias("capexratio"),
             pl.col("closeadj").alias("spot"),
-        ).fill_nan(0.0)
+        ).fill_nan(0.0).sort(by="date")
         self.dates = self.data.select("date").unique().collect().to_series()
         if self.test:
             self.ep_length = len(self.dates)

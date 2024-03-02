@@ -25,14 +25,14 @@ from reactpy_apexcharts import ApexChart
 from sanic.log import logger
 from sanic import Request, json, Sanic, html
 
-from src import db
+import db
 from src.render_gfx import get_rewards_curve_figure
 from src.memoryqueue import MemoryQueue, Job
 
 celery_app = Celery(
     "tasks",
-    broker="redis://localhost:6379/0",
-    backend="redis://localhost:6379/0",
+    broker="redis://redis:6379/0",
+    backend="redis://redis:6379/0",
 )
 
 Sanic.start_method = "fork"
@@ -52,26 +52,10 @@ async def main_process_start(app):
     app.shared_ctx.hallpass = mp.Semaphore()
     app.ctx.queue = asyncio.Queue()
     app.shared_ctx.gpu_queue = MemoryQueue(app.shared_ctx.mp_ctx)
-    db.RenderData.drop()
-    logger.debug("Dropped old render data table")
-    db.StdCVData.drop()
-    logger.debug("Dropped old standard cv data table")
-    db.CVData.drop()
-    logger.debug("Dropped old raw data table")
     db.Workers.drop()
     logger.debug("Dropped old workers table")
-    db.Jobs.drop()
-    logger.debug("Dropped old jobs table")
-    db.Jobs.create()
-    logger.debug("Created new jobs table")
     db.Workers.create()
     logger.debug("Created new workers table")
-    db.CVData.create()
-    logger.debug("Created new cv data table")
-    db.StdCVData.create()
-    logger.debug("Created new standard cv data table")
-    db.RenderData.create()
-    logger.debug("Created new render data table")
 
 
 def get_gpu_usage():
@@ -102,8 +86,7 @@ def gpu_allocator(gpu_queue: MemoryQueue, hallpass: mp.Semaphore):
                     try:
                         fn = next_job.fn_name
                         args = next_job.args
-                        cv_periods = next_job.cv_periods
-                        celery_app.send_task(fn, args=(args, cv_periods))
+                        celery_app.send_task(fn, args=(args,))
                         retry_count = 0
                     except torch.cuda.OutOfMemoryError:
                         logger.error("Error processing job")
@@ -138,15 +121,15 @@ async def main_process_ready(app: Sanic):
     )
 
 
-def estimate_gpu_usage(table_name, network_depth, network_width, buffer_len) -> int:
-    data = db.StdCVData.read(table_name, 0)
+def estimate_gpu_usage(table_name, jobname, network_depth, network_width, buffer_len) -> int:
+    data = db.StdCVData.read(table_name, jobname, 0)
     no_symbols = len(data.select("ticker").unique().collect().to_series())
     no_features = 44 * no_symbols + 39
     no_actions = no_symbols + 2
     no_obs = buffer_len * no_features
     no_parameters = (no_obs + no_actions) + network_width**network_depth
     sizeof_float = 64
-    return 20 * no_parameters * sizeof_float
+    return no_parameters * sizeof_float
 
 
 @main_app.get("/start")
@@ -155,22 +138,23 @@ async def start_handler(request: Request):
     logger.info("Starting training")
     table_name = args.get("table_name")
     jobname = args.get("jobname", "default")
+    _async = bool(int(args.get("async", 0)))
     network_depth = int(args.get("network_depth", 4))
     network_width = max(
         [int(args.get(f"network_width_{i}", 4096)) for i in range(network_depth)]
     )
-    cv_periods = db.CVData.get_cv_no_chunks(table_name)
-    gpu_usage = estimate_gpu_usage(table_name, network_depth, network_width, 10)
-    db.Jobs.add(jobname)
+    cv_periods = db.CVData.get_cv_no_chunks(table_name, jobname)
+    gpu_usage = estimate_gpu_usage(table_name, jobname, network_depth, network_width, 10)
     logger.info(
         "Starting training for %s with cv_periods=%s",
         table_name,
         cv_periods,
     )
+    fn_name = "tasks.manage_training" if not _async else "tasks.manage_training_async"
     gpu_job = Job(
         job_id=jobname,
         memory_usage=gpu_usage,
-        fn_name="tasks.manage_training",
+        fn_name=fn_name,
         args=args,
         cv_periods=cv_periods,
     )
@@ -188,7 +172,11 @@ async def get_job_status(request: Request):
 @main_app.get("/get_jobs")
 async def get_jobs(request: Request):
     jobs = db.Jobs.get_all()
-    res = {job[0]: job[1] for job in jobs}
+    def build_tree(job):
+        children = [build_tree(child) for child in jobs if child[2] == job[0]]
+        res = {"name": job[0], "status": job[1], "children": children}
+        return {k: v for k, v in res.items() if v}
+    res = [build_tree(job) for job in jobs if job[2] is None]
     return json({"jobs": res})
 
 
@@ -239,7 +227,8 @@ async def get_test_render(request: Request):
 @main_app.get("/get_job_summary")
 async def get_job_summary(request: Request):
     table_name = request.args.get("table_name")
-    returns, dates = await get_validation_returns(table_name)
+    jobname = request.args.get("jobname", "default")
+    returns, dates = await get_validation_returns(table_name, jobname)
     returns_index = 100 * returns.cum_sum().exp()
     drawdown = 100 * (returns_index - returns_index.cum_max()) / returns_index.cum_max()
     chart = await get_returns_drawdown_chart(returns_index, drawdown, dates)
@@ -271,15 +260,15 @@ async def get_returns_drawdown_chart(
     return fig
 
 
-async def get_validation_returns(table_name):
-    no_chunks = db.CVData.get_cv_no_chunks(table_name)
+async def get_validation_returns(table_name, jobname):
+    no_chunks = db.CVData.get_cv_no_chunks(table_name, jobname)
     accumulator = []
     date_accumulator = []
-    for i in range(1, no_chunks):
-        render = db.RenderData.read(table_name, i)
+    for i in range(1, no_chunks - 1):
+        render = db.RenderData.read(table_name, jobname, i)
         render = render.with_columns(
             pl.col("market_value").log().diff().alias("returns")
-        )
+        ).collect()
         returns = render["returns"]
         dates = render["Date"]
         accumulator.append(returns)
@@ -295,20 +284,33 @@ async def prepare_data(request: Request):
     table_name = request.args.get("table_name")
     no_chunks = int(request.args.get("no_chunks", 0))
     chunk_size = int(request.args.get("chunk_size", 1000))
-    coro = manage_prepare_data(table_name, no_chunks, chunk_size)
+    jobname = request.args.get("jobname", "default")
+    db.Jobs.add(jobname)
+    coro = manage_prepare_data(table_name, no_chunks, chunk_size, jobname)
     task = asyncio.get_event_loop().create_task(coro)
     request.app.ctx.queue.put_nowait(task)
     return json({"status": "success"})
 
 
-async def manage_prepare_data(table_name, no_chunks, chunk_size):
+async def manage_prepare_data(table_name, no_chunks, chunk_size, jobname):
     logger.info("Preparing data")
     if not no_chunks:
-        db.RawData.chunk(table_name, chunk_size=chunk_size)
-        no_chunks = db.CVData.get_cv_no_chunks(table_name)
+        db.RawData.chunk(table_name, jobname, chunk_size=chunk_size )
+        no_chunks = db.CVData.get_cv_no_chunks(table_name, jobname)
     else:
-        db.RawData.chunk(table_name, no_chunks=no_chunks)
-    ops = [db.CVData.standardize(table_name, i) for i in range(no_chunks)]
+        db.RawData.chunk(table_name, jobname, no_chunks=no_chunks)
+    ops = []
+    for i in range(no_chunks):
+        ops.append(db.CVData.standardize_async(table_name, jobname, i))
+    await asyncio.gather(*ops)
+    return json({"status": "success"})
+
+
+@main_app.get("/delete_job")
+async def delete_job(request: Request):
+    jobname = request.args.get("jobname", "default")
+    db.Jobs.delete(jobname)
+    logger.info("Deleted job %s", jobname)
     return json({"status": "success"})
 
 

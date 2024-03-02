@@ -1,7 +1,9 @@
+import asyncio
 import numpy as np
 import torch
 import gc
 import time
+import zipfile
 
 from contextlib import contextmanager
 from functools import partial
@@ -16,6 +18,7 @@ from celery_app import celery_app
 import db
 from trader import Trader
 from cache import cache
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +27,21 @@ LOCK_EXPIRE = 60 * 10  # Lock expires in 10 minutes
 
 
 @celery_app.task
-def complete_job(result, jobname):
+def complete_job_async(result, jobname):
     db.Jobs.complete(jobname)
+
+@celery_app.task
+def add_render_data_async(*args):
+    table_name = args[-4]
+    render_data = args[-3]
+    i = args[-2]
+    jobname = args[-1]
+    db.RenderData.add(table_name, render_data, i, jobname)
+
+@celery_app.task
+def sleep(nil_res, seconds):
+    time.sleep(seconds)
+    return seconds
 
 
 @contextmanager
@@ -38,32 +54,66 @@ def memcache_lock():
         if time.monotonic() < timeout_at and status:
             cache.delete("gpu_cpu_dump")
 
-
 @celery_app.task
-def manage_training(args, cv_periods):
+def manage_training(args):
     args = {k: v[0] for k, v in args.items() if v is not None}
-    jobname = args.get("jobname", "default")
+    jobname = args.get("jobname")
+    table_name = args.get("table_name")
     db.Jobs.start(jobname)
     start_i = int(args.get("i", 0))
-
-    # Create a list of tasks for the chain
-    tasks = []
+    cv_periods =  db.CVData.get_cv_no_chunks(table_name, jobname)
 
     for i in range(start_i, cv_periods - 1):
         chunk_job_train = f"{jobname}_train_{i}"
         chunk_job_validate = f"{jobname}_validate_{i}"
-        db.Jobs.add(chunk_job_train)
-        db.Jobs.add(chunk_job_validate)
+        db.Jobs.add(chunk_job_train, parent=jobname)
+        db.Jobs.add(chunk_job_validate, parent=jobname)
+    for i in range(start_i, cv_periods - 1):
+        train_cv_period(args, i, cv_periods - 1)
+        validate_cv_period(args, i, cv_periods - 1)
+    db.Jobs.complete(jobname)
+ 
 
-        # Append each task to the list
-        tasks.append(
-            chain(train_cv_period.s(args, i), validate_cv_period_chained.s(args, i))
-        )
-    chord(tasks)(complete_job.s(jobname))
+@celery_app.task
+def manage_training_async(args):
+    args = {k: v[0] for k, v in args.items() if v is not None}
+    max_concurrency = int(args.get("max_concurrency", 4))
+    jobname = args.get("jobname", "default")
+    db.Jobs.start(jobname)
+    start_i = int(args.get("i", 0))
+    table_name = args.get("table_name")
+    cv_periods =  db.CVData.get_cv_no_chunks(table_name, jobname)
+    
+    group_tasks = []
+    i = start_i
+    while i < cv_periods - 1:
+        chain_tasks = []
+        for _ in range(max_concurrency):
+            chunk_job_train = f"{jobname}_train_{i}"
+            chunk_job_validate = f"{jobname}_validate_{i}"
+            if i >= cv_periods - 1:
+                break
+            db.Jobs.add(chunk_job_train, parent=jobname)
+            logger.info("Adding job %s", chunk_job_train)
+            db.Jobs.add(chunk_job_validate, parent=jobname)
+            logger.info("Adding job %s", chunk_job_validate)
+            chain_tasks.append(
+                chain(
+                    train_cv_period_chained.s(args, i, cv_periods - 1),
+                    validate_cv_period_chained.s(args, i, cv_periods - 1)
+                )
+            )
+            logger.info("Adding task to job chain %s", chain_tasks[-1])
+            i += 1
+        group_tasks.append(group(chain_tasks))
+        logger.info("Adding job group %s", group_tasks[-1])
+    job = chain(*group_tasks) | complete_job_async.s(jobname)
+    job.apply_async()
+    logger.info("Job %s started", job)
 
 
 @celery_app.task(bind=True)
-def train_cv_period(self, args, i):
+def train_cv_period(self, args, i: int, cv_periods: int):
     table_name = args.get("table_name")
     ncpu = int(args.get("ncpu", 64))
     render_mode = args.get("render_mode", None)
@@ -75,7 +125,6 @@ def train_cv_period(self, args, i):
     jobname = args.get("jobname", "default")
     network_depth = int(args.get("network_depth", 4))
     network_width = []
-    cv_periods = int(args.get("cv_periods", 5))
     for j in range(network_depth):
         depth_j = int(args.get(f"network_width_{j}", 4096))
         network_width.append(depth_j)
@@ -89,6 +138,7 @@ def train_cv_period(self, args, i):
         env_fn = partial(
             Trader,
             table_name,
+            jobname,
             i,
             test=True,
             render_mode=render_mode,
@@ -128,10 +178,25 @@ def train_cv_period(self, args, i):
             torch.cuda.empty_cache()
     db.Jobs.complete(chunk_job_train)
     logger.info("Training on fold %i of %i of job %s complete", i, cv_periods, jobname)
+    asyncio.sleep(0.1)
+
+def ensure_zip(file_handle):
+    try:
+        with zipfile.ZipFile(file_handle + '.zip', 'r') as zip_file:
+            zip_file.testzip()
+        return True
+
+    except zipfile.BadZipFile:
+        logger.error("The file handle is not a valid CRC zip file.")
+        return False
+    
+    except FileNotFoundError:
+        logger.error("The file handle is not a valid file.")
+        return False
 
 
 @celery_app.task(bind=True)
-def validate_cv_period(self, args, i: int):
+def validate_cv_period(self, args, i: int, cv_periods:int):
     table_name = args.get("table_name")
     render_mode = args.get("render_mode", "human")
     render_mode = args.get("render_mode", None)
@@ -140,18 +205,27 @@ def validate_cv_period(self, args, i: int):
     jobname = args.get("jobname", "default")
     model: Type[PPO] | Type[SAC] = PPO if model_name == "ppo" else SAC
     chunk_job_validate = f"{jobname}_validate_{i}"
-    logger.info("Starting validation on fold %i of job %s", i, jobname)
+    logger.info("Starting validation on fold %i of %i of job %s", i, cv_periods, jobname)
     db.Jobs.start(chunk_job_validate)
     env_test = Trader(
         table_name,
+        jobname,
         i + 1,
         test=True,
         render_mode=render_mode,
         risk_aversion=risk_aversion,
     )
     model_handle = f"model_{jobname}_{i}"
+    if not ensure_zip(model_handle):
+        logger.error("Model file not found")
+        db.Jobs.complete(chunk_job_validate)
+        return
     with memcache_lock() as acquired:
         if acquired:
+            if not ensure_zip(model_handle):
+                logger.error("Model file not found")
+                db.Jobs.complete(chunk_job_validate)
+                return
             model_test = model.load(model_handle, env=env_test)
     vec_env = model_test.get_env()
     obs = vec_env.reset()
@@ -168,7 +242,7 @@ def validate_cv_period(self, args, i: int):
         if done:
             break
     render_data = env_test.get_render()
-    db.RenderData.add(table_name, render_data, i + 1)
+    db.RenderData.add(table_name, render_data, i + 1, jobname)
     with memcache_lock() as acquired:
         if acquired:
             del model_test
@@ -179,5 +253,15 @@ def validate_cv_period(self, args, i: int):
 
 
 @celery_app.task
-def validate_cv_period_chained(train_res, args, i):
-    return validate_cv_period(args, i)
+def validate_cv_period_chained(*args):
+    cv_periods = args[-1]
+    i = args[-2]
+    args = args[-3]
+    return validate_cv_period(args, i, cv_periods)
+
+@celery_app.task
+def train_cv_period_chained(*args):
+    cv_periods = args[-1]
+    i = args[-2]
+    args = args[-3]
+    return train_cv_period(args, i, cv_periods)

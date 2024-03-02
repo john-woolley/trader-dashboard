@@ -7,5 +7,5 @@ celery_app.conf.broker_url = "redis://redis:6379/0"
 celery_app.conf.result_backend = "redis://redis:6379/0"
 if __name__ == "__main__":
     celery_app.start(
-        ("worker", "--loglevel=info", "--pool=threads", "--concurrency=1000")
+        ("worker", "-E", "--loglevel=info", "--pool=threads", "--concurrency=1000")
     )
