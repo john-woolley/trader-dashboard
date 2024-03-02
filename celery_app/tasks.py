@@ -19,6 +19,7 @@ import db
 from trader import Trader
 from cache import cache
 import logging
+from callbacks import ProgressBarCallback
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,7 @@ def train_cv_period(self, args, i: int, cv_periods: int):
     except torch.cuda.OutOfMemoryError:
         logger.error("Error creating environment")
     env = VecMonitor(env, f"log/monitor/{jobname}/{i}/{i}")
+    callback = ProgressBarCallback(timesteps, chunk_job_train)
     network = {
         "pi": network_width,
         "vf": network_width,
@@ -169,7 +171,7 @@ def train_cv_period(self, args, i: int, cv_periods: int):
         device=device,
         tensorboard_log=f"log/tensorboard/{jobname}",
     )
-    model_train.learn(total_timesteps=timesteps)
+    model_train.learn(total_timesteps=timesteps, callback=callback)
     with memcache_lock() as acquired:
         if acquired:
             model_train.save(f"model_{jobname}_{i}")

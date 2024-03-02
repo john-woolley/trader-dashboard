@@ -10,3 +10,4 @@ log/*
 events.out.tfevents.*
 minikube-linux-amd64
 data/*
+db_api
