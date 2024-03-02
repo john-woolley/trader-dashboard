@@ -5,6 +5,7 @@ matplotlib
 reactpy[sanic]
 sqlalchemy
 psycopg2-binary
+asyncpg
 pyfredapi
 torch
 polars

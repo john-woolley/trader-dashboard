@@ -10,7 +10,7 @@ from functools import partial
 from typing import Type
 import logging
 
-from celery import group, chain, chord
+from celery import group, chain
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.vec_env import VecMonitor, SubprocVecEnv
 
@@ -19,7 +19,7 @@ import db
 from trader import Trader
 from cache import cache
 import logging
-from callbacks import ProgressBarCallback
+from callbacks import get_progress_bar
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +62,16 @@ def manage_training(args):
     table_name = args.get("table_name")
     db.Jobs.start(jobname)
     start_i = int(args.get("i", 0))
-    cv_periods =  db.CVData.get_cv_no_chunks(table_name, jobname)
+    cv_periods =  db.CVData.get_cv_no_chunks(table_name, jobname) - 1
 
-    for i in range(start_i, cv_periods - 1):
+    for i in range(start_i, cv_periods):
         chunk_job_train = f"{jobname}_train_{i}"
         chunk_job_validate = f"{jobname}_validate_{i}"
         db.Jobs.add(chunk_job_train, parent=jobname)
         db.Jobs.add(chunk_job_validate, parent=jobname)
-    for i in range(start_i, cv_periods - 1):
-        train_cv_period(args, i, cv_periods - 1)
-        validate_cv_period(args, i, cv_periods - 1)
+    for i in range(start_i, cv_periods):
+        train_cv_period(args, i, cv_periods)
+        validate_cv_period(args, i, cv_periods)
     db.Jobs.complete(jobname)
  
 
@@ -83,16 +83,16 @@ def manage_training_async(args):
     db.Jobs.start(jobname)
     start_i = int(args.get("i", 0))
     table_name = args.get("table_name")
-    cv_periods =  db.CVData.get_cv_no_chunks(table_name, jobname)
+    cv_periods =  db.CVData.get_cv_no_chunks(table_name, jobname) - 1
     
     group_tasks = []
     i = start_i
-    while i < cv_periods - 1:
+    while i < cv_periods:
         chain_tasks = []
-        for _ in range(max_concurrency):
+        for pos in range(max_concurrency):
             chunk_job_train = f"{jobname}_train_{i}"
             chunk_job_validate = f"{jobname}_validate_{i}"
-            if i >= cv_periods - 1:
+            if i >= cv_periods:
                 break
             db.Jobs.add(chunk_job_train, parent=jobname)
             logger.info("Adding job %s", chunk_job_train)
@@ -100,18 +100,19 @@ def manage_training_async(args):
             logger.info("Adding job %s", chunk_job_validate)
             chain_tasks.append(
                 chain(
-                    train_cv_period_chained.s(args, i, cv_periods - 1),
-                    validate_cv_period_chained.s(args, i, cv_periods - 1)
+                    train_cv_period_chained.s(args, i, cv_periods),
+                    validate_cv_period_chained.s(args, i, cv_periods)
                 )
             )
-            logger.info("Adding task to job chain %s", chain_tasks[-1])
+            logger.info("Adding tasks to chain")
             i += 1
         group_tasks.append(group(chain_tasks))
-        logger.info("Adding job group %s", group_tasks[-1])
+        logger.info("Adding chain to group")
     job = chain(*group_tasks) | complete_job_async.s(jobname)
-    job.apply_async()
-    logger.info("Job %s started", job)
-
+    logger.info("Job %s started", jobname)
+    res = job.apply_async()
+    return res.id
+    
 
 @celery_app.task(bind=True)
 def train_cv_period(self, args, i: int, cv_periods: int):
@@ -152,7 +153,10 @@ def train_cv_period(self, args, i: int, cv_periods: int):
     except torch.cuda.OutOfMemoryError:
         logger.error("Error creating environment")
     env = VecMonitor(env, f"log/monitor/{jobname}/{i}/{i}")
-    callback = ProgressBarCallback(timesteps, chunk_job_train)
+
+
+    progress_bar = get_progress_bar(chunk_job_train, timesteps)
+
     network = {
         "pi": network_width,
         "vf": network_width,
@@ -171,7 +175,7 @@ def train_cv_period(self, args, i: int, cv_periods: int):
         device=device,
         tensorboard_log=f"log/tensorboard/{jobname}",
     )
-    model_train.learn(total_timesteps=timesteps, callback=callback)
+    model_train.learn(total_timesteps=timesteps, callback=progress_bar)
     with memcache_lock() as acquired:
         if acquired:
             model_train.save(f"model_{jobname}_{i}")
@@ -180,7 +184,7 @@ def train_cv_period(self, args, i: int, cv_periods: int):
             torch.cuda.empty_cache()
     db.Jobs.complete(chunk_job_train)
     logger.info("Training on fold %i of %i of job %s complete", i, cv_periods, jobname)
-    asyncio.sleep(0.1)
+    asyncio.run(asyncio.sleep(0.1))
 
 def ensure_zip(file_handle):
     try:

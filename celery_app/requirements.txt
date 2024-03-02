@@ -4,6 +4,7 @@ scipy
 matplotlib
 sqlalchemy
 psycopg2-binary
+asyncpg
 pyfredapi
 torch
 polars
