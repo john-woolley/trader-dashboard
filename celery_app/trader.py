@@ -143,6 +143,7 @@ class Trader(gym.Env):
         self.transaction_cost = transaction_cost
         self.current_step = 0
         self.buffer_len = n_lags
+
         self.render_df = pl.LazyFrame()
         self.render_dict: Dict[str, Dict[str, Any]] = {}
         self.balance = self.initial_balance
@@ -156,20 +157,27 @@ class Trader(gym.Env):
         self.rate = 0.01
         self.prev_portfolio_value = 0
         self.period = 0
+
         self.data = db.StdCVData.read(self.table_name, self.jobname, self.chunk)
         self.data = self.data.sort("date", "ticker")
-        self.data = self.data.with_columns(
-            pl.col("date").cast(pl.Date).alias("date"),
-            pl.col("capex").truediv(pl.col("equity")).alias("capexratio"),
-            pl.col("closeadj").alias("spot"),
-        ).fill_nan(0.0).sort(by="date")
+        self.data = (
+            self.data.with_columns(
+                pl.col("date").cast(pl.Date).alias("date"),
+                pl.col("capex").truediv(pl.col("equity")).alias("capexratio"),
+                pl.col("closeadj").alias("spot"),
+            )
+            .fill_nan(0.0)
+            .sort(by="date")
+        )
+
         self.dates = self.data.select("date").unique().collect().to_series()
         if self.test:
             self.ep_length = len(self.dates)
         self.symbols = self.data.select("ticker").unique().collect().to_series()
         self.no_symbols = len(self.symbols)
-        low = [-1] * self.no_symbols + [0.05, 0.5]
-        high = [1] * self.no_symbols + [1, 1.5]
+
+        low = [-1] * self.no_symbols + [0.001, 0.01]
+        high = [1] * self.no_symbols + [0.8, 1.5]
         self.action_space = spaces.Box(
             low=np.array(low, dtype=np.float32),
             high=np.array(high, dtype=np.float32),
@@ -178,6 +186,7 @@ class Trader(gym.Env):
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.buffer_len, 44 * self.no_symbols + 39)
         )
+
         self.cov = np.eye(self.no_symbols)
         self.hurst_exponents = np.array([0.5] * self.no_symbols)
         self.action = np.zeros(self.no_symbols)
@@ -267,14 +276,19 @@ class Trader(gym.Env):
 
     def _get_model_portfolio_weights(self):
         scaled = self.model_portfolio.copy()
+
         shorts = np.where(self.model_portfolio < 0)[0]
         longs = np.where(self.model_portfolio > 0)[0]
+
         short_weights = np.abs(self.model_portfolio[shorts])
         long_weights = self.model_portfolio[longs]
+
         sum_weight_short = np.sum(short_weights)
         sum_weight_long = np.sum(long_weights)
-        scaled[shorts] = scaled[shorts] / sum_weight_short * self.short_leverage
+
+        scaled[shorts] = scaled[shorts] / sum_weight_short * 0
         scaled[longs] = scaled[longs] / sum_weight_long * self.long_leverage
+
         return scaled
 
     def reset(self, seed=42, options=None) -> Tuple[Any, Dict[str, Any]]:
@@ -289,17 +303,21 @@ class Trader(gym.Env):
         - observation (object): The initial observation of the environment.
         - info (dict): An empty dictionary.
         """
+
         seed = random.seed(seed)  # nosec
+
         self.cov = np.eye(self.no_symbols)
         self.vol_ests = np.array([0.1] * self.no_symbols)
         self.return_series = np.array([])
         self.var = 0
         self.net_leverage = np.zeros(self.no_symbols)
         self.current_step = 0
+
         if self.test:
             self.period = 0
         else:
             self.period = random.randint(0, len(self.dates) - self.ep_length)  # nosec
+
         self.spot = (
             self.data.select("spot", "date")
             .filter(pl.col("date") == self.current_date)
@@ -308,6 +326,7 @@ class Trader(gym.Env):
             .to_numpy()
             .flatten()
         )
+
         self.hurst_exponents = np.array([0.5] * self.no_symbols)
         self.rsi = np.array([50] * self.no_symbols)
         self.balance = self.initial_balance
@@ -315,6 +334,7 @@ class Trader(gym.Env):
         self.state_buffer = deque([], self.buffer_len)
         self.paid_slippage = 0
         self.model_portfolio = np.zeros(self.no_symbols)
+
         state_frame = self._get_state_frame()
         while len(self.state_buffer) < self.buffer_len:
             self.state_buffer.append(state_frame)
@@ -367,7 +387,8 @@ class Trader(gym.Env):
         Get the state frame for the current step.
 
         Returns:
-            int: The predicted state for the current step.
+        np.ndarray: The state frame for the current step.
+
         """
         p = self.period
         s = self.current_step
@@ -385,10 +406,13 @@ class Trader(gym.Env):
             .reshape(len(prev_dates), -1, len(used_cols) + len(macro_cols) + 1)
         )
         spot = spot_window[-1, :, 0].reshape(-1)
+
         if self.current_step > self.buffer_len:
-            covariance = np.corrcoef(spot_window[:, :, 0].T)[
+
+            corr = np.corrcoef(spot_window[:, :, 0].T)[
                 np.triu_indices(self.no_symbols)
             ]
+
             hurst_exponents = (
                 np.array(
                     [
@@ -399,6 +423,7 @@ class Trader(gym.Env):
                 + (self.buffer_len - 1) * self.hurst_exponents
             ) / self.buffer_len
             self.hurst_exponents = hurst_exponents
+
             rsi = (
                 np.array(
                     [
@@ -409,39 +434,46 @@ class Trader(gym.Env):
                 + (self.buffer_len - 1) * self.rsi
             ) / self.buffer_len
             self.rsi = rsi
+
             distance_from_max = np.max(spot_window[:, :, 0], axis=0) / spot
             distance_from_min = spot / np.min(spot_window[:, :, 0], axis=0)
         else:
-            covariance = np.eye(self.no_symbols)[np.triu_indices(self.no_symbols)]
+            corr = np.eye(self.no_symbols)[np.triu_indices(self.no_symbols)]
             hurst_exponents = np.array([0.5] * self.no_symbols)
             rsi = np.array([50] * self.no_symbols)
             distance_from_max = np.ones(self.no_symbols)
             distance_from_min = np.ones(self.no_symbols)
+
         stock_state = spot_window[-1, :, 1:-macro_len].reshape(-1)
         macro_state = spot_window[-1, -1, -macro_len:]
         self.spot = spot
         log_spot_window = np.log(spot_window[:, :, 0])
+
         if self.current_step > 0:
             spot_returns = np.diff(log_spot_window, axis=0)[-1]
         else:
             spot_returns = np.zeros(self.no_symbols)
+
         spot_rank = get_percentile(spot, spot_window[:, :, 0], axis=0)
+        
         stock_state = np.concatenate(
             [
                 stock_state,
                 spot_rank,
                 spot_returns,
                 spot_returns**2,
-                covariance,
+                corr,
                 hurst_exponents,
                 rsi,
                 distance_from_max,
                 distance_from_min,
             ]
         )
+
         state = np.concatenate(
             [stock_state, self.net_position_weights, self.model_portfolio]
         )
+
         state = np.concatenate([state, macro_state])
 
         return state
@@ -550,13 +582,17 @@ class Trader(gym.Env):
         self.paid_slippage = 0
         self.prev_portfolio_value = self.current_portfolio_value
         self.prev_spot = self.spot
+
         self.rate = 0.01
         self._accrue_interest()
+
         for idx, x in enumerate(action[: self.no_symbols]):
             self.model_portfolio[idx] = x
+
         self.short_leverage = action[-2]
         self.long_leverage = action[-1]
         target_weights = self._get_model_portfolio_weights()
+
         deviations = np.zeros(self.no_symbols)
         for idx, x in enumerate(action[: self.no_symbols]):
             actual_weight = self.net_position_weights[idx]
@@ -567,17 +603,21 @@ class Trader(gym.Env):
             deviations
             / sum_deviation
             * np.min(
-                [sum_deviation, max(self.balance / self.current_portfolio_value, 0.01)]
+                [sum_deviation, max(self.balance / self.current_portfolio_value, 0.001)]
             )
         )
+
         for idx, deviation in enumerate(deviations):
             net = deviation * self.current_portfolio_value
             amount = net / self.spot[idx]
             sign = 1 if amount > 0 else -1
             self._trade(abs(amount), sign, underlying=idx)
+
         self.state_buffer.append(self._get_state_frame())
+
         self._update_return_series()
         reward = self._get_reward()
+
         self.action = action
         self.render(mode=str(self.render_mode))
         self.current_step += 1

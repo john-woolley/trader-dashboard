@@ -1,0 +1,112 @@
+import click
+import logging
+from stable_baselines3 import PPO, SAC
+from vec_env import CeleryVecEnv
+from stable_baselines3.common.vec_env import VecMonitor
+from stable_baselines3.common.callbacks import EvalCallback
+from memcache_lock import memcache_lock
+from trader import Trader
+from callbacks import get_progress_bar
+import torch
+import gc
+from functools import partial
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+@click.command()
+@click.option("--table_name", default="trader", help="Name of the table to use")
+@click.option("--ncpu", default=4, help="Number of CPUs to use")
+@click.option("--render_mode", default="none", help="Render mode")
+@click.option("--network_depth", default=2, help="Network depth")
+@click.option("--network_width", default=256, help="Network width")
+@click.option("--timesteps", default=100000, help="Number of timesteps")
+@click.option("--batch_size", default=64, help="Batch size")
+@click.option("--use_sde", default=False, help="Use SDE")
+@click.option("--device", default="auto", help="Device")
+@click.option("--jobname", default="test", help="Job name")
+@click.option("--model_name", default="ppo", help="Model name")
+@click.option("--risk_aversion", default=0.9, help="Risk aversion")
+@click.option("--cv_periods", default=5, help="Cross validation periods")
+@click.option("--i", default=0, help="Fold")
+def train(
+    table_name: str,
+    jobname: str,
+    i: int,
+    cv_periods: int,
+    timesteps: int = 1,
+    ncpu: int = 1,
+    render_mode: str = "none",
+    network_depth: int = 2,
+    network_width: int = 256,
+    batch_size: int = 64,
+    use_sde: bool = False,
+    device: str = "auto",
+    model_name: str = "ppo",
+    risk_aversion: float = 0.9,
+):
+    model = PPO if model_name == "ppo" else SAC
+    chunk_job_train = f"{jobname}.train.{i}"
+    logger.info("Starting training on fold %i of %i of job %s", i, cv_periods, jobname)
+    try:
+        env_fn = partial(
+            Trader,
+            table_name,
+            jobname,
+            i,
+            test=True,
+            render_mode=render_mode,
+            risk_aversion=risk_aversion,
+        )
+        env_fns = [env_fn for _ in range(ncpu)]
+        with memcache_lock() as acquired:
+            if acquired:
+                env = CeleryVecEnv(chunk_job_train, env_fns)
+    except torch.cuda.OutOfMemoryError:
+        logger.error("Error creating environment")
+    env = VecMonitor(env, f"log/monitor/{jobname}/{i}/{i}")
+
+    network = {
+        "pi": [network_width] * network_depth,
+        "vf": [network_width] * network_depth,
+        "qf": [network_width] * network_depth,
+    }
+    policy_kwargs = {
+        "net_arch": network,
+    }
+    model_train = model(
+        "MlpPolicy",
+        env,
+        policy_kwargs=policy_kwargs,
+        verbose=0,
+        batch_size=batch_size,
+        use_sde=use_sde,
+        device=device,
+        tensorboard_log=f"log/tensorboard/{jobname}",
+    )
+    eval_env = Trader(
+        table_name,
+        jobname,
+        i + 1,
+        test=True,
+        render_mode=render_mode,
+        risk_aversion=risk_aversion,
+    )
+    callback = EvalCallback(
+        eval_env,
+        best_model_save_path=f"model_{jobname}_{i}",
+        log_path=f"log/eval/{jobname}",
+        eval_freq=20,
+        )
+    model_train.learn(total_timesteps=timesteps, callback=callback)
+    with memcache_lock() as acquired:
+        if acquired:
+            del model_train
+            gc.collect()
+            torch.cuda.empty_cache()
+    logger.info("Training on fold %i of %i of job %s complete", i, cv_periods, jobname)
+
+
+if __name__ == "__main__":
+    train()

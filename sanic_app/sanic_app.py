@@ -31,7 +31,7 @@ from src.memoryqueue import MemoryQueue, Job
 
 celery_app = Celery(
     "tasks",
-    broker="redis://redis:6379/0",
+    broker="amqp://celery:celery@rabbitmq:5672/celery",
     backend="redis://redis:6379/0",
 )
 
@@ -121,21 +121,25 @@ async def main_process_ready(app: Sanic):
     )
 
 
-def estimate_gpu_usage(table_name, jobname, network_depth, network_width, buffer_len) -> int:
+def estimate_gpu_usage(
+    table_name, jobname, network_depth, network_width, buffer_len
+) -> int:
     data = db.StdCVData.read(table_name, jobname, 0)
+
     no_symbols = len(data.select("ticker").unique().collect().to_series())
     no_features = 44 * no_symbols + 39
     no_actions = no_symbols + 2
     no_obs = buffer_len * no_features
     no_parameters = (no_obs + no_actions) + network_width**network_depth
     sizeof_float = 64
+
     return no_parameters * sizeof_float
 
 
 @main_app.get("/start")
 async def start_handler(request: Request):
     args = request.args
-    logger.info("Starting training")
+
     table_name = args.get("table_name")
     jobname = args.get("jobname", "default")
     _async = bool(int(args.get("async", 0)))
@@ -143,14 +147,21 @@ async def start_handler(request: Request):
     network_width = max(
         [int(args.get(f"network_width_{i}", 4096)) for i in range(network_depth)]
     )
+
     cv_periods = db.CVData.get_cv_no_chunks(table_name, jobname)
-    gpu_usage = estimate_gpu_usage(table_name, jobname, network_depth, network_width, 10)
+
+    gpu_usage = estimate_gpu_usage(
+        table_name, jobname, network_depth, network_width, 10
+    )
+
     logger.info(
         "Starting training for %s with cv_periods=%s",
         table_name,
         cv_periods,
     )
+
     fn_name = "tasks.manage_training" if not _async else "tasks.manage_training_async"
+
     gpu_job = Job(
         job_id=jobname,
         memory_usage=gpu_usage,
@@ -158,7 +169,9 @@ async def start_handler(request: Request):
         args=args,
         cv_periods=cv_periods,
     )
+
     request.app.shared_ctx.gpu_queue.add(gpu_job)
+
     return json({"status": "success"})
 
 
@@ -166,17 +179,21 @@ async def start_handler(request: Request):
 async def get_job_status(request: Request):
     jobname = request.args.get("jobname", "default")
     status = db.Jobs.get(jobname)
+
     return json({"status": status})
 
 
 @main_app.get("/get_jobs")
 async def get_jobs(request: Request):
     jobs = db.Jobs.get_all()
+
     def build_tree(job):
         children = [build_tree(child) for child in jobs if child[2] == job[0]]
         res = {"name": job[0], "status": job[1], "children": children}
         return {k: v for k, v in res.items() if v}
+
     res = [build_tree(job) for job in jobs if job[2] is None]
+
     return json({"jobs": res})
 
 
@@ -184,43 +201,50 @@ async def get_jobs(request: Request):
 async def upload_csv(request: Request):
     if not request.files:
         return json({"status": "error"})
+
     input_file = request.files.get("file")
-    if not input_file:
+    if not input_file or input_file.type != "text/csv":
         return json({"status": "error"})
-    if input_file.type != "text/csv":
-        return json({"status": "error"})
+
     output_path = request.args.get("output")
     ffill = bool(int(request.args.get("ffill", 0)))
     parse_dates = bool(int(request.args.get("parse_dates", 0)))
     file_path = os.path.join(app_path, "data", output_path)
+
     logger.info("Uploading %s to %s", input_file.name, file_path)
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(input_file.body.decode("utf-8"))
     logger.info("Uploaded %s to %s", input_file.name, file_path)
+
     coro = manage_csv_db_upload(file_path, output_path, ffill, parse_dates)
     task = asyncio.get_event_loop().create_task(coro)
     request.app.ctx.queue.put_nowait(task)
+
     return json({"status": "success"})
 
 
 async def manage_csv_db_upload(file_path, output_path, ffill, parse_dates):
     logger.info("Uploading %s to %s", file_path, output_path)
     df = pl.read_csv(file_path, try_parse_dates=parse_dates)
+
     if "" in df.columns:
         df = df.drop("")
     if ffill:
         df = df.select(cs.all().forward_fill())
+
     db.RawData.insert(df, output_path)
     logger.info("Inserted %s into database as raw table", output_path)
+
     return json({"status": "success"})
 
 
 @main_app.get("/get_test_render")
 async def get_test_render(request: Request):
     jobname = request.args.get("jobname", "default")
+    table_name = request.args.get("table_name")
     chunk = request.args.get("chunk", 0)
-    test_render: pl.DataFrame = db.RenderData.read(jobname, chunk)
-    res = test_render.to_pandas().to_html()
+    test_render: pl.LazyFrame = db.RenderData.read(table_name, jobname, chunk)
+    res = test_render.collect().to_pandas().to_html()
     return html(res)
 
 
@@ -228,11 +252,14 @@ async def get_test_render(request: Request):
 async def get_job_summary(request: Request):
     table_name = request.args.get("table_name")
     jobname = request.args.get("jobname", "default")
+
     returns, dates = await get_validation_returns(table_name, jobname)
+    sharpe_ratio = returns.mean() / returns.std()
     returns_index = 100 * returns.cum_sum().exp()
     drawdown = 100 * (returns_index - returns_index.cum_max()) / returns_index.cum_max()
+
     chart = await get_returns_drawdown_chart(returns_index, drawdown, dates)
-    sharpe_ratio = returns.mean() / returns.std()
+
     return json(
         {
             "sharpe_ratio": sharpe_ratio * np.sqrt(252),
@@ -264,6 +291,7 @@ async def get_validation_returns(table_name, jobname):
     no_chunks = db.CVData.get_cv_no_chunks(table_name, jobname)
     accumulator = []
     date_accumulator = []
+
     for i in range(1, no_chunks - 1):
         render = db.RenderData.read(table_name, jobname, i)
         render = render.with_columns(
@@ -273,37 +301,56 @@ async def get_validation_returns(table_name, jobname):
         dates = render["Date"]
         accumulator.append(returns)
         date_accumulator.append(dates)
+
     returns = pl.concat(accumulator)
     dates = pl.concat(date_accumulator)
+
     return returns, dates
 
 
 @main_app.get("/prepare_data")
 async def prepare_data(request: Request):
     logger.info("Preparing data")
+
+    jobname = request.args.get("jobname", "default")
     table_name = request.args.get("table_name")
     no_chunks = int(request.args.get("no_chunks", 0))
     chunk_size = int(request.args.get("chunk_size", 1000))
-    jobname = request.args.get("jobname", "default")
+    max_concurrency = int(request.args.get("max_concurrency", 16))
+
     db.Jobs.add(jobname)
-    coro = manage_prepare_data(table_name, no_chunks, chunk_size, jobname)
+
+    coro = manage_prepare_data(
+        table_name, no_chunks, chunk_size, jobname, max_concurrency
+    )
     task = asyncio.get_event_loop().create_task(coro)
     request.app.ctx.queue.put_nowait(task)
+
     return json({"status": "success"})
 
 
-async def manage_prepare_data(table_name, no_chunks, chunk_size, jobname):
+async def manage_prepare_data(
+    table_name, no_chunks, chunk_size, jobname, max_concurrency=16
+):
     logger.info("Preparing data")
+
     if not no_chunks:
-        db.RawData.chunk(table_name, jobname, chunk_size=chunk_size )
+        db.RawData.chunk(table_name, jobname, chunk_size=chunk_size)
         no_chunks = db.CVData.get_cv_no_chunks(table_name, jobname)
     else:
         db.RawData.chunk(table_name, jobname, no_chunks=no_chunks)
-    ops = []
-    for i in range(no_chunks):
+
+    i = 0
+    while i < no_chunks:
+        ops = []
+        j = 0
+        while j < max_concurrency and i < no_chunks:
+            ops.append(db.CVData.standardize_async(table_name, jobname, i))
+            i += 1
+            j += 1
+
         ops.append(db.CVData.standardize_async(table_name, jobname, i))
-    await asyncio.gather(*ops)
-    return json({"status": "success"})
+        await asyncio.gather(*ops)
 
 
 @main_app.get("/delete_job")
@@ -311,6 +358,7 @@ async def delete_job(request: Request):
     jobname = request.args.get("jobname", "default")
     db.Jobs.delete(jobname)
     logger.info("Deleted job %s", jobname)
+
     return json({"status": "success"})
 
 
@@ -320,16 +368,20 @@ def stop_handler(request: Request):
     logger.info("Stopping training for job: %s", jobname)
     request.app.shared_ctx.hallpass.acquire()
     logger.info("Acquired hallpass")
+
     try:
         workers = db.Workers.get_workers_by_name(jobname)
         request.app.m.terminate_worker(workers)
+
     except sanic.SanicException as e:
         logger.error("Error stopping workers")
         logger.error(e)
         return json({"status": "error"})
+
     finally:
         request.app.shared_ctx.hallpass.release()
         logger.info("Released hallpass")
+
     return json({"status": "success"})
 
 
@@ -352,4 +404,4 @@ def react_app():
 configure(main_app, react_app)
 
 if __name__ == "__main__":
-    main_app.run(host="0.0.0.0", port=8004, debug=True, workers=16)
+    main_app.run(host="0.0.0.0", port=8004, debug=True)
