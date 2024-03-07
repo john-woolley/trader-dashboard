@@ -11,3 +11,8 @@ events.out.tfevents.*
 minikube-linux-amd64
 data/*
 db_api
+target/debug/*
+target
+*.whl
+*.egg
+*.lock

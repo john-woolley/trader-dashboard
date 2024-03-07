@@ -148,8 +148,6 @@ class Trader(gym.Env):
         self.render_dict: Dict[str, Dict[str, Any]] = {}
         self.balance = self.initial_balance
         self.return_series = np.array([])
-        self.var = 0
-        self.log_ret = 0
         self.state_buffer: deque = deque([], self.buffer_len)
         self.paid_slippage = 0
         self.short_leverage = 0.05
@@ -176,15 +174,15 @@ class Trader(gym.Env):
         self.symbols = self.data.select("ticker").unique().collect().to_series()
         self.no_symbols = len(self.symbols)
 
-        low = [-1] * self.no_symbols + [0.001, 0.01]
-        high = [1] * self.no_symbols + [0.8, 1.5]
+        low = [-1] * self.no_symbols + [0.05, 0.6, -1]
+        high = [1] * self.no_symbols + [0.15, 1.25, 1]
         self.action_space = spaces.Box(
             low=np.array(low, dtype=np.float32),
             high=np.array(high, dtype=np.float32),
-            shape=(self.no_symbols + 2,),
+            shape=(self.no_symbols + 3,),
         )
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.buffer_len, 44 * self.no_symbols + 39)
+            low=-np.inf, high=np.inf, shape=(self.buffer_len, 43 * self.no_symbols + 39)
         )
 
         self.cov = np.eye(self.no_symbols)
@@ -194,7 +192,7 @@ class Trader(gym.Env):
         self.model_portfolio = np.zeros(self.no_symbols)
         self.spot = np.zeros(self.no_symbols)
         self.prev_spot = np.zeros(self.no_symbols)
-        self.vol_ests = np.array([0.1] * self.no_symbols)
+        self.deviations = np.zeros(self.no_symbols)
 
     @property
     def current_portfolio_value(self):
@@ -286,7 +284,7 @@ class Trader(gym.Env):
         sum_weight_short = np.sum(short_weights)
         sum_weight_long = np.sum(long_weights)
 
-        scaled[shorts] = scaled[shorts] / sum_weight_short * 0
+        scaled[shorts] = scaled[shorts] / sum_weight_short * self.short_leverage
         scaled[longs] = scaled[longs] / sum_weight_long * self.long_leverage
 
         return scaled
@@ -307,9 +305,8 @@ class Trader(gym.Env):
         seed = random.seed(seed)  # nosec
 
         self.cov = np.eye(self.no_symbols)
-        self.vol_ests = np.array([0.1] * self.no_symbols)
         self.return_series = np.array([])
-        self.var = 0
+        self.deviations = np.zeros(self.no_symbols)
         self.net_leverage = np.zeros(self.no_symbols)
         self.current_step = 0
 
@@ -330,7 +327,6 @@ class Trader(gym.Env):
         self.hurst_exponents = np.array([0.5] * self.no_symbols)
         self.rsi = np.array([50] * self.no_symbols)
         self.balance = self.initial_balance
-        self.log_ret = 0
         self.state_buffer = deque([], self.buffer_len)
         self.paid_slippage = 0
         self.model_portfolio = np.zeros(self.no_symbols)
@@ -470,11 +466,7 @@ class Trader(gym.Env):
             ]
         )
 
-        state = np.concatenate(
-            [stock_state, self.net_position_weights, self.model_portfolio]
-        )
-
-        state = np.concatenate([state, macro_state])
+        state = np.concatenate([stock_state, self.deviations, macro_state])
 
         return state
 
@@ -529,8 +521,8 @@ class Trader(gym.Env):
         rf_ret = self.rate / 252
         ret_vol = self.return_volatility or 0.05
         reward = yeojohnson((ret - rf_ret) / ret_vol, self.risk_aversion)
-        assert isinstance(reward, np.ndarray)
-        return reward
+        normalized_reward = 1 / (1 + np.exp(-reward))
+        return normalized_reward
 
     def _accrue_interest(self) -> None:
         """
@@ -589,8 +581,10 @@ class Trader(gym.Env):
         for idx, x in enumerate(action[: self.no_symbols]):
             self.model_portfolio[idx] = x
 
-        self.short_leverage = action[-2]
-        self.long_leverage = action[-1]
+        self.short_leverage = action[-3]
+        self.long_leverage = action[-2]
+        trade_today = action[-1] > 0
+        self.trade_today = trade_today or self.current_step % 20 == 0
         target_weights = self._get_model_portfolio_weights()
 
         deviations = np.zeros(self.no_symbols)
@@ -603,15 +597,17 @@ class Trader(gym.Env):
             deviations
             / sum_deviation
             * np.min(
-                [sum_deviation, max(self.balance / self.current_portfolio_value, 0.001)]
+                [sum_deviation, max(1/(1+self.current_step/2), 0.1)]
             )
         )
+        self.deviations = deviations
 
-        for idx, deviation in enumerate(deviations):
-            net = deviation * self.current_portfolio_value
-            amount = net / self.spot[idx]
-            sign = 1 if amount > 0 else -1
-            self._trade(abs(amount), sign, underlying=idx)
+        if self.trade_today:
+            for idx, deviation in enumerate(deviations):
+                net = deviation * self.current_portfolio_value
+                amount = net / self.spot[idx]
+                sign = 1 if amount > 0 else -1
+                self._trade(abs(amount), sign, underlying=idx)
 
         self.state_buffer.append(self._get_state_frame())
 
@@ -661,6 +657,8 @@ class Trader(gym.Env):
                 f"Stock Owned: {self.total_net_position_value:.2f}, "
                 f"Reward: {self._get_reward():.2f}, "
                 f"Gross Leverage: {self.total_gross_position_value:.2f}"
+                f"Long Weight: {self.long_leverage:.2f}, "
+                f"Short Weight: {self.short_leverage:.2f}, "
             )
             logger.info(output)
         else:
@@ -671,6 +669,10 @@ class Trader(gym.Env):
             "market_value": self.current_portfolio_value,
             "balance": self.balance,
             "paid_slippage": self.paid_slippage,
+            "reward": self._get_reward(),
+            "gross_leverage": self.total_gross_position_value,
+            "long_weight": self.long_leverage,
+            "short_weight": self.short_leverage,
         }
         net_lev_dict = {
             f"leverage_{self.symbols[i]}": self.net_position_values[i]

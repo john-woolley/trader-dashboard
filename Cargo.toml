@@ -1,0 +1,16 @@
+[package]
+name = "celery_app"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "celery_app"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = "0.20.0"
+polars = "0.38.1"
+tokio = { version = "1", features = ["full"] }
+tokio-postgres = "0.7.10"
+polars-arrow = "0.38.1"

@@ -6,14 +6,42 @@ from stable_baselines3.common.vec_env import VecMonitor
 from stable_baselines3.common.callbacks import EvalCallback
 from memcache_lock import memcache_lock
 from trader import Trader
-from callbacks import get_progress_bar
+from typing import Type
+import zipfile
 import torch
 import gc
+import time
 from functools import partial
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def ensure_zip(file_handle, max_attempts=10, interval=1):
+    max_attempts = 10
+    attempts = 0
+
+    while attempts < max_attempts:
+        try:
+            with zipfile.ZipFile(file_handle + ".zip", "r") as zip_file:
+                zip_file.testzip()
+            return True
+
+        except zipfile.BadZipFile:
+            logger.error("The file handle is not a valid CRC zip file.")
+            return False
+
+        except FileNotFoundError:
+            logger.error("The file handle is not a valid file.")
+            return False
+
+        except Exception as e:
+            logger.warning(f"Error checking zip file: {e}")
+
+        attempts += 2
+        time.sleep(interval)
+
+    logger.error(f"Exceeded maximum attempts to check zip file: {file_handle}")
+    return False
 
 @click.command()
 @click.option("--table_name", default="trader", help="Name of the table to use")
@@ -46,7 +74,7 @@ def train(
     model_name: str = "ppo",
     risk_aversion: float = 0.9,
 ):
-    model = PPO if model_name == "ppo" else SAC
+    model: Type[PPO] | Type[SAC] = PPO if model_name == "ppo" else SAC
     chunk_job_train = f"{jobname}.train.{i}"
     logger.info("Starting training on fold %i of %i of job %s", i, cv_periods, jobname)
     try:
@@ -75,16 +103,19 @@ def train(
     policy_kwargs = {
         "net_arch": network,
     }
-    model_train = model(
-        "MlpPolicy",
-        env,
-        policy_kwargs=policy_kwargs,
-        verbose=0,
-        batch_size=batch_size,
-        use_sde=use_sde,
-        device=device,
-        tensorboard_log=f"log/tensorboard/{jobname}",
-    )
+    try:
+        model_train = model.load(f"model_{jobname}_{i-1}/best_model", env)
+    except FileNotFoundError:
+        model_train = model(
+            "MlpPolicy",
+            env,
+            policy_kwargs=policy_kwargs,
+            verbose=0,
+            batch_size=batch_size,
+            use_sde=use_sde,
+            device=device,
+            tensorboard_log=f"log/tensorboard/{jobname}",
+        )
     eval_env = Trader(
         table_name,
         jobname,
@@ -98,8 +129,10 @@ def train(
         best_model_save_path=f"model_{jobname}_{i}",
         log_path=f"log/eval/{jobname}",
         eval_freq=20,
+        n_eval_episodes=1
         )
     model_train.learn(total_timesteps=timesteps, callback=callback)
+    ensure_zip(f"model_{jobname}_{i}/best_model")
     with memcache_lock() as acquired:
         if acquired:
             del model_train

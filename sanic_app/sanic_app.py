@@ -164,7 +164,7 @@ async def start_handler(request: Request):
 
     gpu_job = Job(
         job_id=jobname,
-        memory_usage=gpu_usage,
+        memory_usage=0,
         fn_name=fn_name,
         args=args,
         cv_periods=cv_periods,

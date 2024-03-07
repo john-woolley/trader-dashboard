@@ -2,7 +2,7 @@ import time
 import logging
 from celery import group, chain
 import subprocess
-from celery_app import celery_app
+from app import celery_app
 import db
 
 logger = logging.getLogger(__name__)
@@ -47,8 +47,8 @@ def manage_training(args):
     cv_periods = db.CVData.get_cv_no_chunks(table_name, jobname) - 1
 
     for i in range(start_i, cv_periods):
-        chunk_job_train = f"{jobname}_train_{i}"
-        chunk_job_validate = f"{jobname}_validate_{i}"
+        chunk_job_train = f"{jobname}.train.{i}"
+        chunk_job_validate = f"{jobname}.validate.{i}"
         db.Jobs.add(chunk_job_train, parent=jobname)
         db.Jobs.add(chunk_job_validate, parent=jobname)
     

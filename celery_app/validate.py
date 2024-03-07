@@ -14,34 +14,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def ensure_zip(file_handle, max_attempts=10, interval=1):
-    max_attempts = 10
-    attempts = 0
-
-    while attempts < max_attempts:
-        try:
-            with zipfile.ZipFile(file_handle + ".zip", "r") as zip_file:
-                zip_file.testzip()
-            return True
-
-        except zipfile.BadZipFile:
-            logger.error("The file handle is not a valid CRC zip file.")
-            return False
-
-        except FileNotFoundError:
-            logger.error("The file handle is not a valid file.")
-            return False
-
-        except Exception as e:
-            logger.warning(f"Error checking zip file: {e}")
-
-        attempts += 2
-        time.sleep(interval)
-
-    logger.error(f"Exceeded maximum attempts to check zip file: {file_handle}")
-    return False
-
-
 @click.command()
 @click.option("--table_name", default="trader", help="Name of the table to use")
 @click.option("--jobname", default="test", help="Job name")
@@ -67,12 +39,7 @@ def validate(
         risk_aversion=risk_aversion,
     )
     model_handle = f"model_{jobname}_{i}/best_model"
-    with memcache_lock() as acquired:
-        if acquired:
-            if not ensure_zip(model_handle):
-                logger.error("Model file not found")
-                return
-            model_test = model.load(model_handle, env=env_test)
+    model_test = model.load(model_handle, env=env_test)
     vec_env = model_test.get_env()
     obs = vec_env.reset()
     lstm_states = None
