@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+   name: celery
+   namespace: default
+   labels:
+      app: celery
+spec:
+   replicas: 1
+   selector:
+      matchLabels:
+         bb: web
+   template:
+      metadata:
+         labels:
+            bb: web
+      spec:
+         containers:
+            - name: celery
+              image: johwo84/trader-dashboard-celery
+              imagePullPolicy: Always
+---

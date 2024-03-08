@@ -10,6 +10,7 @@ import asyncio
 import multiprocessing as mp
 import os
 import time
+import subprocess
 
 import reactpy
 import sanic
@@ -404,4 +405,5 @@ def react_app():
 configure(main_app, react_app)
 
 if __name__ == "__main__":
+    subprocess.run(["python", "db.py"])
     main_app.run(host="0.0.0.0", port=8004, debug=True)

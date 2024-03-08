@@ -17,7 +17,7 @@ spec:
       spec:
          containers:
             - name: bb-site
-              image: johwo84/trader-dashboard
+              image: johwo84/trader-dashboard-sanic
               imagePullPolicy: Always
 ---
 apiVersion: v1

@@ -7,7 +7,7 @@ celery_app = Celery(
 )
 celery_app.conf.result_serializer = "json"
 celery_app.conf.task_serializer = "pickle"
-celery_app.conf.broker_url = "amqp://celery:celery@rabbitmq:5672/celery"
+celery_app.conf.broker_url = "redis://redis:6379/0"
 celery_app.conf.result_backend = "redis://redis:6379/0"
 if __name__ == "__main__":
     celery_app.start(

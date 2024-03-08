@@ -27,3 +27,34 @@ spec:
   resources:
     requests:
       storage: 50Gi  # Sets volume size
+---
+kind: PersistentVolume
+apiVersion: v1
+metadata:
+  name: redis-pv-volume  # Sets PV's name
+  labels:
+    type: local  # Sets PV's type to local
+    app: redis
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 50Gi # Sets PV Volume
+  accessModes:
+    - ReadWriteMany
+  hostPath:
+    path: "/mnt/md0"
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: redis-pv-claim  # Sets name of PVC
+  labels:
+    app: redis
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteMany  # Sets read and write access
+  resources:
+    requests:
+      storage: 50Gi  # Sets volume size
+      
