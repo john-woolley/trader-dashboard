@@ -16,3 +16,5 @@ target
 *.whl
 *.egg
 *.lock
+*id_rsa*
+celery_app/db.py

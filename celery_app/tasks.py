@@ -128,7 +128,7 @@ def train_cv_period(args, i: int, cv_periods: int):
     subprocess.call(
         [
             "python",
-            "trader_dashboard/celery_app/train.py",
+            "train.py",
             "--table_name",
             table_name,
             "--ncpu",
@@ -177,7 +177,7 @@ def validate_cv_period(args, i: int, cv_periods: int):
     subprocess.call(
         [
             "python",
-            "trader_dashboard/celery_app/validate.py",
+            "validate.py",
             "--table_name",
             table_name,
             "--jobname",

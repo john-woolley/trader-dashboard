@@ -8,6 +8,11 @@ ADD trader.py /workspace/trader.py
 ADD cache.py /workspace/cache.py
 ADD train.py /workspace/train.py
 ADD validate.py /workspace/validate.py
+ADD db.py /workspace/db.py
+ADD vec_env.py /workspace/vec_env.py
+ADD memcache_lock.py /workspace/memcache_lock.py
+ADD train.py /workspace/train.py
+ADD validate.py /workspace/validate.py
 RUN export MKL_THREADING_LAYER=GNU
 CMD [ "python", "/workspace/app.py"]
 RUN useradd -ms /bin/bash celery

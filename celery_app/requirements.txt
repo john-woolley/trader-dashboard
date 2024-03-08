@@ -12,4 +12,3 @@ tensorboard
 scikit-learn
 pyarrow
 redis
-git+https://john-woolley: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@github.com/john-woolley/trader-dashboard-db.git@main#egg=
