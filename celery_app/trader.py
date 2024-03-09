@@ -182,7 +182,7 @@ class Trader(gym.Env):
             shape=(self.no_symbols + 3,),
         )
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.buffer_len, 43 * self.no_symbols + 39)
+            low=-np.inf, high=np.inf, shape=(self.buffer_len, 21 * self.no_symbols + (self.no_symbols * (self.no_symbols + 1)) // 2 + 39)
         )
 
         self.cov = np.eye(self.no_symbols)

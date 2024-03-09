@@ -1,5 +1,5 @@
 import argparse
-from src.trader import Trader
+from celery_app.trader import Trader
 import logging
 import os
 import numpy as np

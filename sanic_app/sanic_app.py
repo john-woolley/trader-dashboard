@@ -32,7 +32,7 @@ from src.memoryqueue import MemoryQueue, Job
 
 celery_app = Celery(
     "tasks",
-    broker="amqp://celery:celery@rabbitmq:5672/celery",
+    broker="redis://redis:6379/0",
     backend="redis://redis:6379/0",
 )
 
@@ -209,7 +209,7 @@ async def upload_csv(request: Request):
 
     output_path = request.args.get("output")
     ffill = bool(int(request.args.get("ffill", 0)))
-    parse_dates = bool(int(request.args.get("parse_dates", 0)))
+
     file_path = os.path.join(app_path, "data", output_path)
 
     logger.info("Uploading %s to %s", input_file.name, file_path)
@@ -217,17 +217,32 @@ async def upload_csv(request: Request):
         f.write(input_file.body.decode("utf-8"))
     logger.info("Uploaded %s to %s", input_file.name, file_path)
 
-    coro = manage_csv_db_upload(file_path, output_path, ffill, parse_dates)
-    task = asyncio.get_event_loop().create_task(coro)
+    coro = manage_csv_db_upload(file_path, output_path, ffill)
+    loop = asyncio.get_event_loop()
+    task = asyncio.run_coroutine_threadsafe(coro, loop=loop)
     request.app.ctx.queue.put_nowait(task)
 
     return json({"status": "success"})
 
 
-async def manage_csv_db_upload(file_path, output_path, ffill, parse_dates):
+async def manage_csv_db_upload(file_path, output_path, ffill):
     logger.info("Uploading %s to %s", file_path, output_path)
-    df = pl.read_csv(file_path, try_parse_dates=parse_dates)
+    df = pl.read_csv(file_path, try_parse_dates=True, infer_schema_length=60000)
 
+    def convert_date_format(date_str, output_format='%Y-%m-%d'):
+        # Split the input date string using '/'
+        month, day, year = map(int, date_str.split('/'))
+        
+        # Rearrange the components based on the output format
+        formatted_date = (
+            output_format.replace('%Y', str(year))
+            .replace('%m', f'{month:02d}')
+            .replace('%d', f'{day:02d}')
+            )
+
+        return formatted_date
+    
+    df = df.with_columns(pl.col("date").map_elements(convert_date_format).alias("date"))
     if "" in df.columns:
         df = df.drop("")
     if ffill:
@@ -324,7 +339,8 @@ async def prepare_data(request: Request):
     coro = manage_prepare_data(
         table_name, no_chunks, chunk_size, jobname, max_concurrency
     )
-    task = asyncio.get_event_loop().create_task(coro)
+    loop = asyncio.get_event_loop()
+    task = asyncio.run_coroutine_threadsafe(coro, loop=loop)
     request.app.ctx.queue.put_nowait(task)
 
     return json({"status": "success"})
@@ -406,4 +422,4 @@ configure(main_app, react_app)
 
 if __name__ == "__main__":
     subprocess.run(["python", "db.py"])
-    main_app.run(host="0.0.0.0", port=8004, debug=True)
+    main_app.run(host="0.0.0.0", port=8004, debug=True, fast=True)

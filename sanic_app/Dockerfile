@@ -8,4 +8,5 @@ RUN mkdir /workspace/data
 CMD [ "python", "/workspace/sanic_app.py"]
 EXPOSE 8004
 RUN useradd -ms /bin/bash sanic
+RUN chown -R sanic /workspace
 USER sanic
