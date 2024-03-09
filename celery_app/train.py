@@ -3,7 +3,7 @@ import logging
 from stable_baselines3 import PPO, SAC
 from vec_env import CeleryVecEnv
 from stable_baselines3.common.vec_env import VecMonitor
-from stable_baselines3.common.callbacks import EvalCallback
+from callbacks import UpdatePctCallback
 from memcache_lock import memcache_lock
 from trader import Trader
 from typing import Type
@@ -93,7 +93,6 @@ def train(
                 env = CeleryVecEnv(chunk_job_train, env_fns)
     except torch.cuda.OutOfMemoryError:
         logger.error("Error creating environment")
-    env = VecMonitor(env, f"log/monitor/{jobname}/{i}/{i}")
 
     network = {
         "pi": [network_width] * network_depth,
@@ -124,8 +123,10 @@ def train(
         render_mode=render_mode,
         risk_aversion=risk_aversion,
     )
-    callback = EvalCallback(
+    callback = UpdatePctCallback(
         eval_env,
+        total_timesteps=timesteps,
+        jobname=chunk_job_train,
         best_model_save_path=f"model_{jobname}_{i}",
         log_path=f"log/eval/{jobname}",
         eval_freq=20,

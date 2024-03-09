@@ -189,11 +189,18 @@ async def get_jobs(request: Request):
     jobs = db.Jobs.get_all()
 
     def build_tree(job):
-        children = [build_tree(child) for child in jobs if child[2] == job[0]]
-        res = {"name": job[0], "status": job[1], "children": children}
+        children = [build_tree(child) for child in jobs if child[-1] == job[0]]
+        res = {
+            "name": job[0],
+            "status": job[1],
+            "pct_complete": job[2] or 'pending',
+            "start_time": str(job[3]),
+            "end_time": str(job[4]),
+            "children": children
+        }
         return {k: v for k, v in res.items() if v}
 
-    res = [build_tree(job) for job in jobs if job[2] is None]
+    res = [build_tree(job) for job in jobs if job[-1] is None]
 
     return json({"jobs": res})
 

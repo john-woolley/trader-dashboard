@@ -13,6 +13,7 @@ ADD vec_env.py /workspace/vec_env.py
 ADD memcache_lock.py /workspace/memcache_lock.py
 ADD train.py /workspace/train.py
 ADD validate.py /workspace/validate.py
+ADD callbacks.py /workspace/callbacks.py
 RUN export MKL_THREADING_LAYER=GNU
 CMD [ "python", "/workspace/app.py"]
 RUN useradd -ms /bin/bash celery

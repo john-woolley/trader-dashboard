@@ -5,7 +5,7 @@ It provides functions for creating tables, inserting data,
 retrieving data, and managing jobs and workers.
 """
 import asyncio
-import time
+from datetime import datetime
 from typing import Optional
 
 import sqlalchemy as sa
@@ -263,7 +263,11 @@ class Jobs(DBBase):
                 metadata,
                 sa.Column("name", sa.String, primary_key=True),
                 sa.Column("status", sa.String),
-                sa.Column("parent", sa.String)
+                sa.Column("parent", sa.String),
+                sa.Column("pct_complete", sa.Float),
+                sa.Column("create_time", sa.DateTime),
+                sa.Column("start_time", sa.DateTime),
+                sa.Column("end_time", sa.DateTime),
             )
         return table
 
@@ -281,7 +285,15 @@ class Jobs(DBBase):
         conn = cls.get_engine()
         metadata = cls.get_metadata()
         table = cls.get_table(metadata)
-        ins = table.insert().values(name=job_name, parent=parent, status="pending")
+        ins = table.insert().values(
+            name=job_name,
+            parent=parent,
+            status="pending",
+            pct_complete = 0.0,
+            create_time = datetime.now(),
+            start_time = None,
+            end_time = None,
+        )
         conn.execute(ins)
         conn.commit()
         conn.close()
@@ -347,7 +359,10 @@ class Jobs(DBBase):
         conn = cls.get_engine()
         metadata = cls.get_metadata()
         table = cls.get_table(metadata)
-        query = update(table).where(table.c.name == job_name).values(status="running")
+        query = update(table).where(table.c.name == job_name).values(
+            status="running",
+            start_time=datetime.now()
+        )
         conn.execute(query)
         conn.commit()
         conn.close()
@@ -366,7 +381,33 @@ class Jobs(DBBase):
         conn = cls.get_engine()
         metadata = cls.get_metadata()
         table = cls.get_table(metadata)
-        query = update(table).where(table.c.name == job_name).values(status="complete")
+        query = update(table).where(table.c.name == job_name).values(
+            status="complete",
+            end_time = datetime.now(),
+            pct_complete = 1
+            )
+        conn.execute(query)
+        conn.commit()
+        conn.close()
+
+    @classmethod
+    def update_pct_complete(cls, job_name: str, pct_complete: float) -> None:
+        """
+        Update the percentage complete of a job in the database.
+
+        Args:
+            job_name (str): The name of the job to update.
+            pct_complete (float): The percentage complete.
+
+        Returns:
+            None
+        """
+        conn = cls.get_engine()
+        metadata = cls.get_metadata()
+        table = cls.get_table(metadata)
+        query = update(table).where(table.c.name == job_name).values(
+            pct_complete = pct_complete
+            )
         conn.execute(query)
         conn.commit()
         conn.close()
@@ -399,7 +440,14 @@ class Jobs(DBBase):
         conn = cls.get_engine()
         metadata = cls.get_metadata()
         table = cls.get_table(metadata)
-        query = sa.select(table.c.name, table.c.status, table.c.parent)
+        query = sa.select(
+            table.c.name,
+            table.c.status,
+            table.c.pct_complete, 
+            table.c.start_time, 
+            table.c.end_time, 
+            table.c.parent
+            )
         fetch = conn.execute(query)
         conn.close()
         res = fetch.fetchall()
