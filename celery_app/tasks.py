@@ -113,10 +113,7 @@ def train_cv_period(args, i: int, cv_periods: int):
     device = args.get("device", "auto")
     jobname = args.get("jobname", "default")
     network_depth = int(args.get("network_depth", 4))
-    network_width = []
-    for j in range(network_depth):
-        depth_j = int(args.get(f"network_width_{j}", 4096))
-        network_width.append(depth_j)
+    network_width = int(args.get("network_width", 256))
     model_name = args.get("model_name", "ppo")
     risk_aversion = float(args.get("risk_aversion", 0.9))
     chunk_job_train = f"{jobname}.train.{i}"
@@ -137,6 +134,8 @@ def train_cv_period(args, i: int, cv_periods: int):
             render_mode,
             "--network_depth",
             str(network_depth),
+            "--network_width",
+            str(network_width),
             "--timesteps",
             str(timesteps),
             "--batch_size",
