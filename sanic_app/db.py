@@ -426,11 +426,12 @@ class Jobs(DBBase):
         conn = cls.get_engine()
         metadata = cls.get_metadata()
         table = cls.get_table(metadata)
-        query = sa.select(table.c.status).where(table.c.name == jobname)
+        query = sa.select(table.c.status, table.c.pct_complete).where(table.c.name == jobname)
         fetch = conn.execute(query)
         conn.close()
         status = fetch.fetchone()
-        return status[0]
+        if status:
+            return {"status": status[0], "pct_complete": status[1]}
 
     @classmethod
     def get_all(cls):

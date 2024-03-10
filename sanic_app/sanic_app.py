@@ -155,6 +155,13 @@ async def start_handler(request: Request):
         table_name, jobname, network_depth, network_width, 10
     )
 
+    # Check if the training data exists.
+    try:
+        db.StdCVData.read(table_name, jobname, 0)
+    except Exception as e:
+        logger.error("Error reading data: %s", str(e))
+        return json({"status": "error"})
+
     logger.info(
         "Starting training for %s with cv_periods=%s",
         table_name,
@@ -180,7 +187,6 @@ async def start_handler(request: Request):
 async def get_job_status(request: Request):
     jobname = request.args.get("jobname", "default")
     status = db.Jobs.get(jobname)
-
     return json({"status": status})
 
 
@@ -193,7 +199,7 @@ async def get_jobs(request: Request):
         res = {
             "name": job[0],
             "status": job[1],
-            "pct_complete": job[2] or 'pending',
+            "pct_complete": job[2] or 0,
             "start_time": str(job[3]),
             "end_time": str(job[4]),
             "children": children

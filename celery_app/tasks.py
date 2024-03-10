@@ -39,7 +39,7 @@ def sleep(nil_res, seconds):
 @celery_app.task
 def manage_training(args):
     args = {k: v[0] for k, v in args.items() if v is not None}
-    
+    timesteps = int(args.get("timesteps", 1000))
     jobname = args.get("jobname")
     table_name = args.get("table_name")
     db.Jobs.start(jobname)
@@ -52,12 +52,39 @@ def manage_training(args):
         db.Jobs.add(chunk_job_train, parent=jobname)
         db.Jobs.add(chunk_job_validate, parent=jobname)
     
+    job = group(
+        do_training.s(args, start_i, cv_periods, jobname),
+        monitor_progress.s(jobname, cv_periods, timesteps)
+    )
+    job.apply_async()
+
+
+@celery_app.task
+def do_training(args, start_i, cv_periods, jobname):
     for i in range(start_i, cv_periods):
         train_cv_period(args, i, cv_periods)
         validate_cv_period(args, i, cv_periods)
     
     db.Jobs.complete(jobname)
 
+
+@celery_app.task
+def monitor_progress(jobname, cv_periods, timesteps):
+    children = db.Jobs.get_children(jobname)
+    total_timesteps = (timesteps + 1) * cv_periods
+    child_progress = {child: 0 for child in children}
+    while True:
+        for child in children:
+            if child.split(".")[1] == "train":
+                child_progress[child] = db.Jobs.get(child)["pct_complete"] * timesteps
+            elif child.split(".")[1] == "validate":
+                child_progress[child] = db.Jobs.get(child)["pct_complete"]
+        pct_complete = sum(child_progress.values()) / total_timesteps
+        db.Jobs.update_pct_complete(jobname, pct_complete)
+        status = db.Jobs.get(jobname)
+        if status == "complete":
+            break
+        time.sleep(5)
 
 @celery_app.task
 def manage_training_async(args):
@@ -68,7 +95,6 @@ def manage_training_async(args):
     start_i = int(args.get("i", 0))
     table_name = args.get("table_name")
     cv_periods = db.CVData.get_cv_no_chunks(table_name, jobname) - 1
-
     group_tasks = [sleep.s(0, 0)]
     i = start_i
     while i < cv_periods:
@@ -117,9 +143,6 @@ def train_cv_period(args, i: int, cv_periods: int):
     model_name = args.get("model_name", "ppo")
     risk_aversion = float(args.get("risk_aversion", 0.9))
     chunk_job_train = f"{jobname}.train.{i}"
-    status = db.Jobs.get(chunk_job_train)
-    if status != "pending":
-        return
     logger.info("Starting training on fold %i of %i of job %s", i, cv_periods, jobname)
     db.Jobs.start(chunk_job_train)
     subprocess.call(
@@ -166,9 +189,6 @@ def validate_cv_period(args, i: int, cv_periods: int):
     risk_aversion = float(args.get("risk_aversion", 0.9))
     jobname = args.get("jobname", "default")
     chunk_job_validate = f"{jobname}.validate.{i}"
-    status = db.Jobs.get(chunk_job_validate)
-    if status != "pending":
-        return
     logger.info(
         "Starting validation on fold %i of %i of job %s", i, cv_periods, jobname
     )
