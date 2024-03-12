@@ -1,11 +1,7 @@
 use pyo3::prelude::*;
 use polars::prelude::*;
 use std::collections::HashMap;
-use tokio_postgres::{Client, NoTls, Row, Error};
-use polars::datatypes::{DataType, Field};
-use polars_arrow::array::{ArrayRef, Float32Array, Float64Array, Int32Array, Utf8Array, Int64Array};
-use tokio_postgres::types::Type;
-use tokio::runtime::Runtime;
+use pyo3_polars::{PyDataFrame, PySeries};
 
 enum RenderValue {
     Float(f64),
@@ -23,9 +19,7 @@ fn celery_app(_py: Python, m: &PyModule) -> PyResult<()> {
 //
 #[pyclass]
 struct Trader {
-    table_name: String,
-    jobname: String,
-    chunk: usize,
+    data: DataFrame,
     initial_balance: f64,
     n_lags: usize,
     transaction_cost: f64,
@@ -46,100 +40,15 @@ struct Trader {
     spot: Vec<f64>,
     prev_spot: Vec<f64>,
     deviations: Vec<f64>,
-    data: DataFrame,
-}
-
-async fn postgres_to_polars(rows: &[Row]) -> std::result::Result<DataFrame, PolarsError> {
-
-    let mut fields: Vec<(String, polars::datatypes::DataType)> = Vec::new();
-    let column_count = rows[0].len();
-    for i in 0..column_count {
-        let field_name = rows[0].columns()[i].name().to_string();
-        let data_type: polars::datatypes::DataType = match rows[0].columns()[i].type_() {
-            &Type::VARCHAR => polars::datatypes::DataType::String,
-            &Type::TEXT => polars::datatypes::DataType::String,
-            &Type::INT4 => polars::datatypes::DataType::Int32,
-            &Type::INT8 => polars::datatypes::DataType::Int64,
-            &Type::FLOAT4 => polars::datatypes::DataType::Float32,
-            &Type::FLOAT8 => polars::datatypes::DataType::Float64,
-            _ => panic!("Unsupported PostgreSQL data type"),
-        };
-        fields.push((field_name, data_type));
-    }
-
-    let first_row = rows.first().unwrap();
-
-    let mut arrow_arrays: Vec<Vec<ArrayRef>> = vec![];
-    
-    for (col_index, column) in first_row.columns().iter().enumerate() {
-
-        let mut array_data: Vec<ArrayRef> = vec![];
-
-            for (row_index, row) in rows.iter().enumerate() {
-        
-                let array: Box<dyn polars_arrow::array::Array> = match column.type_() {
-                    &Type::VARCHAR => Box::new(Utf8Array::<i64>::from(vec![Some(row.try_get::<usize, String>(col_index).expect("ErrVarChar"))])),
-                    &Type::TEXT => Box::new(Utf8Array::<i64>::from(vec![Some(row.try_get::<usize, String>(col_index).expect("ErrString"))])),
-                    &Type::INT4 => Box::new(Int32Array::from(vec![Some(row.try_get(col_index).expect("ErrInt32"))])),
-                    &Type::INT8 => Box::new(Int64Array::from(vec![Some(row.try_get(col_index).expect("ErrInt64"))])),
-                    &Type::FLOAT4 => Box::new(Float32Array::from(vec![Some(row.try_get(col_index).expect("ErrF32"))])),
-                    &Type::FLOAT8 => Box::new(Float64Array::from(vec![Some(row.try_get(col_index).expect("ErrF64"))])),
-                    _ => panic!("Unsupported PostgreSQL data type"),
-                };
-        
-                array_data.push(array);
-        
-            }
-
-            arrow_arrays.push(array_data);
-    }
-
-    let mut series: Vec<Series> = vec![];
-
-    for (array, field) in arrow_arrays.iter().zip(fields.iter()) {
-        // Debug print to inspect the Arrow array before Series creation
-        println!("Arrow array for {}: {:?}", field.0, array);
-    
-        unsafe {
-            let s = Series::from_chunks_and_dtype_unchecked(&field.0, array.to_vec(), &field.1)
-                .fill_null(FillNullStrategy::Forward(None))?;
-            
-            // Debug print to inspect the Series data
-            println!("Series for {}: {:?}", field.0, s);
-            
-            series.push(s);
-        }
-    }
-    
-    let df: PolarsResult<DataFrame> = DataFrame::new(series);
-    
-
-    df
-}
-
-async fn read_database(table_name: String) -> Result<DataFrame, Box<dyn std::error::Error>> {
-    let (client, connection) = tokio_postgres::connect(
-        "host=postgres user=trader_dashboard password=psltest dbname=trader_dashboard",
-        NoTls,
-    ).await?;
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
-    let rows: Vec<tokio_postgres::Row> = client.query(&format!("SELECT * FROM {}", table_name), &[]).await?;
-    let df = postgres_to_polars(&rows).await?;
-    let df_filled = df.select::<&[&str], _>(&[])?.fill_null(FillNullStrategy::Forward(None))?;
-Ok(df_filled)
+    no_symbols: usize,
+    dates: Series,
 }
 
 #[pymethods]
 impl Trader {
     #[new]
     fn new(
-        table_name: String,
-        jobname: String,
-        chunk: usize,
+        pydata: PyDataFrame,
         initial_balance: f64,
         n_lags: usize,
         transaction_cost: f64,
@@ -148,8 +57,7 @@ impl Trader {
         risk_aversion: f64,
         render_mode: String,
     ) -> Self {
-        let runtime = Runtime::new().unwrap();
-        let data = runtime.block_on(read_database(table_name.clone())).expect("Error reading database");
+        let data: DataFrame = <PyDataFrame as Into<DataFrame>>::into(pydata);
         let render_dict = HashMap::new();
         let balance = initial_balance;
         let return_series = vec![];
@@ -162,10 +70,20 @@ impl Trader {
         let spot = vec![];
         let prev_spot = vec![];
         let deviations = vec![];
+        let no_symbols = 
+            data.column("ticker")
+                .unwrap()
+                .unique()
+                .unwrap()
+                .len();
+        let dates = 
+            data.column("date")
+                .unwrap()
+                .unique()
+                .unwrap();
+
         let trader = Trader {
-            table_name,
-            jobname,
-            chunk,
+            data,
             initial_balance,
             n_lags,
             transaction_cost,
@@ -186,7 +104,8 @@ impl Trader {
             spot,
             prev_spot,
             deviations,
-            data
+            no_symbols,
+            dates
         };
         trader
     }
@@ -196,13 +115,110 @@ impl Trader {
         self.balance = self.initial_balance;
         self.return_series = vec![];
         self.var = 0.0;
-        self.corr = vec![];
-        self.hursts = vec![];
+        self.corr = vec![1.0; self.no_symbols];
+        self.hursts = vec![0.5; self.no_symbols];
         self.action = vec![];
-        self.net_leverage = vec![];
-        self.model_portfolio = vec![];
-        self.spot = vec![];
-        self.prev_spot = vec![];
+        self.net_leverage = vec![0.0; self.no_symbols];
+        self.model_portfolio = vec![0.0; self.no_symbols];
+        let predicate: String = self.dates.get(self.current_step).unwrap().to_string();
+        let filter_expr = col("date").eq(lit(predicate));
+        self.spot = self.data
+            .select(&["spot", "date"])
+            .unwrap()
+            .lazy()
+            .filter(filter_expr)
+            .collect()
+            .unwrap()
+            .drop_in_place("date")
+            .unwrap()
+            .f64()
+            .unwrap()
+            .into_no_null_iter()
+            .collect();
+        self.prev_spot = self.spot.clone();
         self.deviations = vec![];
     }
+
+    #[getter]
+    fn get_no_symbols(&self) -> usize {
+        self.no_symbols
+    }
+
+    #[getter]
+    fn get_dates(&self) -> PySeries {
+        PySeries(self.dates.clone())
+    }
+
+    #[getter]
+    fn get_current_step(&self) -> usize {
+        self.current_step
+    }
+
+    #[getter]
+    fn get_balance(&self) -> f64 {
+        self.balance
+    }
+
+    #[getter]
+    fn get_total_net_position_value(&self) -> f64 {
+        self.get_net_position_values().iter().sum()
+    }
+
+    #[getter]
+    fn get_net_position_values(&self) -> Vec<f64> {
+        self.net_leverage
+        .iter()
+        .zip(&self.spot)
+        .map(|(leverage, spot)| leverage * spot)
+        .collect()
+    }
+
+    #[getter]
+    fn get_current_portfolio_value(&self) -> f64 {
+        self.balance + self.get_total_net_position_value()
+    }
+
+    #[getter]
+    fn get_total_gross_position_value(&self) -> f64 {
+        self.get_gross_position_values().iter().sum()
+    }
+
+    #[getter]
+    fn get_gross_position_values(&self) -> Vec<f64> {
+        self.net_leverage
+        .iter()
+        .zip(&self.spot)
+        .map(|(leverage, spot)| (leverage.abs()) * spot)
+        .collect()
+    }
+
+    #[getter]
+    fn get_current_date(&self) -> String {
+        self.dates.get(self.current_step).unwrap().to_string()
+    }
+
+    fn get_model_portfolio_weights(&self) -> Vec<f64> {
+        let scaled = self.model_portfolio.clone();
+
+        let shorts: Vec<f64> = scaled.iter().copied().filter(|&x| x < 0.0).collect();
+        let longs: Vec<f64> = scaled.iter().copied().filter(|&x| x >= 0.0).collect();
+
+        let short_weights: Vec<f64> = shorts.iter().map(|x| x.abs()).collect();
+        let long_weights: Vec<f64> = longs.iter().map(|x| x.abs()).collect();
+
+        let short_sum: f64 = short_weights.iter().sum();
+        let long_sum: f64 = long_weights.iter().sum();
+
+        let res = scaled.iter().map(|&x| {
+            if x > 0.0 {
+                x / long_sum
+            } else {
+                x / short_sum
+            }
+        }).collect();
+        res
+    }
+
+
+
 }

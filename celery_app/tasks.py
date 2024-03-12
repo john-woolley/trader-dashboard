@@ -1,4 +1,5 @@
 import time
+import datetime
 import logging
 from celery import group, chain
 import subprocess
@@ -73,17 +74,30 @@ def monitor_progress(jobname, cv_periods, timesteps):
     children = db.Jobs.get_children(jobname)
     total_timesteps = (timesteps + 1) * cv_periods
     child_progress = {child: 0 for child in children}
+    pct_complete = 0
+    
     while True:
+        prev_pct_complete = pct_complete
+        
         for child in children:
             if child.split(".")[1] == "train":
                 child_progress[child] = db.Jobs.get(child)["pct_complete"] * timesteps
             elif child.split(".")[1] == "validate":
                 child_progress[child] = db.Jobs.get(child)["pct_complete"]
+       
+        update_time = time.time()
         pct_complete = sum(child_progress.values()) / total_timesteps
-        db.Jobs.update_pct_complete(jobname, pct_complete)
+        delta = (pct_complete - prev_pct_complete)
+       
+        if delta > 1 / total_timesteps:
+            eta_secs = 5 / delta * (1 - pct_complete)
+            eta = datetime.datetime.fromtimestamp(update_time + eta_secs)
+            db.Jobs.update_pct_complete(jobname, pct_complete, eta)
+       
         status = db.Jobs.get(jobname)
         if status == "complete":
             break
+
         time.sleep(5)
 
 @celery_app.task

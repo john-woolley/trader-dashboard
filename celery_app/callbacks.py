@@ -1,3 +1,5 @@
+import time
+import datetime
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 from cache import cache
 import db
@@ -42,11 +44,18 @@ class UpdatePctCallback(EvalCallback):
         self.jobname = jobname
         self.total_timesteps = total_timesteps
         self.progress = 0
+        self.start_time = time.time()
+        self.update_time = self.start_time
 
     def _on_step(self) -> bool:
-        self.progress = self.model.num_timesteps
-        progress_percentage = self.progress / self.total_timesteps
-        db.Jobs.update_pct_complete(self.jobname, progress_percentage)
+        time_delta = time.time() - self.update_time
+        self.update_time = time.time()
+        progress = self.model.num_timesteps / self.total_timesteps
+        progress_delta = progress - self.progress
+        self.progress = progress
+        eta_secs = time_delta / progress_delta * (1 - progress)
+        eta = datetime.datetime.fromtimestamp(self.update_time + eta_secs)
+        db.Jobs.update_pct_complete(self.jobname, progress, eta)
         return super(UpdatePctCallback, self)._on_step()
 
 

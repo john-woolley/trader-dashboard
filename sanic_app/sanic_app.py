@@ -202,6 +202,7 @@ async def get_jobs(request: Request):
             "pct_complete": job[2] or 0,
             "start_time": str(job[3]),
             "end_time": str(job[4]),
+            "eta": str(job[5]),
             "children": children
         }
         return {k: v for k, v in res.items() if v}

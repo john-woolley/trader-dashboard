@@ -1,7 +1,8 @@
 import numpy as np
 import gymnasium as gym
 from celery_app import Trader as TraderRust
-
+import db
+import polars as pl
 
 class Trader(gym.Env):
     def __init__(
@@ -29,10 +30,19 @@ class Trader(gym.Env):
         risk_aversion: f64,
         render_mode: String,
         """
+        self.data = db.StdCVData.read(table_name, jobname, chunk)
+        self.data = self.data.sort("date", "ticker")
+        self.data = (
+            self.data.with_columns(
+                pl.col("date").cast(pl.Date).alias("date"),
+                pl.col("capex").truediv(pl.col("equity")).alias("capexratio"),
+                pl.col("closeadj").alias("spot"),
+            )
+            .fill_nan(0.0)
+            .sort(by="date")
+        ).collect()
         self.trader = TraderRust(
-            table_name,
-            jobname,
-            chunk,
+            self.data,
             initial_balance,
             n_lags,
             transaction_cost,
@@ -41,7 +51,9 @@ class Trader(gym.Env):
             risk_aversion,
             render_mode,
         )
+        print(dir(self.trader))
         self.no_symbols = self.trader.no_symbols
+        self.dates = self.trader.dates
         low = [0] * self.no_symbols + [0.001, 0.6, -1]
         high = [1] * self.no_symbols + [0.1, 1.5, 1]
         self.action_space = gym.spaces.Box(
@@ -53,6 +65,7 @@ class Trader(gym.Env):
             low=-np.inf, high=np.inf, shape=(n_lags, 43 * self.no_symbols + 39)
         )
 
+
     def step(self, action):
         return self.trader.step(action)
 
@@ -63,5 +76,7 @@ class Trader(gym.Env):
         return self.trader.render(mode)
 
 if __name__ == '__main__':
-    env = Trader("test_upload2", "test_job2", 0)
-    print(env)
+    env = Trader("test_upload", "test_job_1024_deep", 0)
+    print(env.no_symbols)
+    print(env.dates)
+    print(env.trader.current_portfolio_value)

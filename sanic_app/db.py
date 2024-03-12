@@ -268,6 +268,7 @@ class Jobs(DBBase):
                 sa.Column("create_time", sa.DateTime),
                 sa.Column("start_time", sa.DateTime),
                 sa.Column("end_time", sa.DateTime),
+                sa.Column("eta", sa.DateTime),
             )
         return table
 
@@ -293,6 +294,7 @@ class Jobs(DBBase):
             create_time = datetime.now(),
             start_time = None,
             end_time = None,
+            eta = None
         )
         conn.execute(ins)
         conn.commit()
@@ -391,7 +393,7 @@ class Jobs(DBBase):
         conn.close()
 
     @classmethod
-    def update_pct_complete(cls, job_name: str, pct_complete: float) -> None:
+    def update_pct_complete(cls, job_name: str, pct_complete: float, eta: datetime) -> None:
         """
         Update the percentage complete of a job in the database.
 
@@ -406,7 +408,8 @@ class Jobs(DBBase):
         metadata = cls.get_metadata()
         table = cls.get_table(metadata)
         query = update(table).where(table.c.name == job_name).values(
-            pct_complete = pct_complete
+            pct_complete = pct_complete,
+            eta = eta
             )
         conn.execute(query)
         conn.commit()
@@ -426,7 +429,14 @@ class Jobs(DBBase):
         conn = cls.get_engine()
         metadata = cls.get_metadata()
         table = cls.get_table(metadata)
-        query = sa.select(table.c.status, table.c.pct_complete).where(table.c.name == jobname)
+        query = sa.select(
+            table.c.status,
+            table.c.pct_complete,
+            table.c.start_time,
+            table.c.end_time,
+            table.c.eta,
+            table.c.parent,
+            ).where(table.c.name == jobname)
         fetch = conn.execute(query)
         conn.close()
         status = fetch.fetchone()
@@ -446,7 +456,8 @@ class Jobs(DBBase):
             table.c.status,
             table.c.pct_complete, 
             table.c.start_time, 
-            table.c.end_time, 
+            table.c.end_time,
+            table.c.eta,
             table.c.parent
             )
         fetch = conn.execute(query)

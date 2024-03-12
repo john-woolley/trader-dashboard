@@ -54,7 +54,7 @@ def ensure_zip(file_handle, max_attempts=10, interval=1):
 @click.option("--use_sde", default=False, help="Use SDE")
 @click.option("--device", default="auto", help="Device")
 @click.option("--jobname", default="test", help="Job name")
-@click.option("--model_name", default="ppo", help="Model name")
+@click.option("--model_name", default="sac", help="Model name")
 @click.option("--risk_aversion", default=0.9, help="Risk aversion")
 @click.option("--cv_periods", default=5, help="Cross validation periods")
 @click.option("--i", default=0, help="Fold")
@@ -71,7 +71,7 @@ def train(
     batch_size: int = 64,
     use_sde: bool = False,
     device: str = "auto",
-    model_name: str = "ppo",
+    model_name: str = "sac",
     risk_aversion: float = 0.9,
 ):
     model: Type[PPO] | Type[SAC] = PPO if model_name == "ppo" else SAC
