@@ -21,3 +21,4 @@ celery_app/db.py
 sanic_app/data/test
 sanic_app/data/test_upload5
 celery_app/log/monitor/*
+*.html
