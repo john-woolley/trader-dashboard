@@ -54,6 +54,7 @@ import polars as pl
 
 from gymnasium import spaces
 from scipy.stats import yeojohnson
+from scipy.signal import lfilter
 
 from ingestion import macro_cols, used_cols
 import db
@@ -182,9 +183,17 @@ class Trader(gym.Env):
             shape=(self.no_symbols + 3,),
         )
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.buffer_len, 21 * self.no_symbols + (self.no_symbols * (self.no_symbols + 1)) // 2 + 39)
+            low=-np.inf, high=np.inf, shape=(
+                self.buffer_len,
+                (
+                    21 * self.no_symbols 
+                    + (self.no_symbols * (self.no_symbols + 1)) // 2 
+                    + len(used_cols) * self.no_symbols 
+                    + len(macro_cols)
+                    + self.buffer_len
+                )
+            )
         )
-
         self.cov = np.eye(self.no_symbols)
         self.hurst_exponents = np.array([0.5] * self.no_symbols)
         self.action = np.zeros(self.no_symbols)
@@ -393,6 +402,7 @@ class Trader(gym.Env):
             prev_dates = get_dt(self.dates[p : p + s + 1])
         else:
             prev_dates = get_dt(self.dates[p + s - self.buffer_len : p + s + 1])
+        
         spot_window = (
             self.data.select("spot", "date", "ticker", *used_cols + macro_cols)
             .filter(pl.col("date").is_in(prev_dates))
@@ -401,6 +411,9 @@ class Trader(gym.Env):
             .to_numpy()
             .reshape(len(prev_dates), -1, len(used_cols) + len(macro_cols) + 1)
         )
+
+
+
         spot = spot_window[-1, :, 0].reshape(-1)
 
         if self.current_step > self.buffer_len:
@@ -433,12 +446,41 @@ class Trader(gym.Env):
 
             distance_from_max = np.max(spot_window[:, :, 0], axis=0) / spot
             distance_from_min = spot / np.min(spot_window[:, :, 0], axis=0)
+
+            causal_result = np.array(
+                [
+                    lfilter([1, -1], [1, -0.5], spot_window[:, i, 0])
+                    for i in range(self.no_symbols)
+                ]
+            )
+            causal_signal = np.array(
+                [
+                    [
+                        spot_window[:, i, j]
+                        for i in range(self.no_symbols)
+                    ]
+                    for j in range(3, len(used_cols) + 3)
+                ]
+            )
+            causal_strength = np.array(
+                [
+                    [
+                        np.corrcoef(causal_result[i], causal_signal[j, i])[0, 1]
+                        for i in range(self.no_symbols)
+                    ]
+                    for j in range(len(used_cols))
+                ]
+            )
+            causal_strength = np.nan_to_num(causal_strength).ravel()
+            ret = self.return_series[-self.buffer_len:]
         else:
+            ret = np.zeros(self.buffer_len)
             corr = np.eye(self.no_symbols)[np.triu_indices(self.no_symbols)]
             hurst_exponents = np.array([0.5] * self.no_symbols)
             rsi = np.array([50] * self.no_symbols)
             distance_from_max = np.ones(self.no_symbols)
             distance_from_min = np.ones(self.no_symbols)
+            causal_strength = np.zeros((len(used_cols), self.no_symbols)).ravel()
 
         stock_state = spot_window[-1, :, 1:-macro_len].reshape(-1)
         macro_state = spot_window[-1, -1, -macro_len:]
@@ -466,9 +508,10 @@ class Trader(gym.Env):
             ]
         )
 
-        state = np.concatenate([stock_state, self.deviations, macro_state])
+        state = np.concatenate([stock_state, self.deviations, macro_state, causal_strength])
+    
 
-        return state
+        return np.concatenate([state, ret])
 
     def _trade(self, amount: float, sign: int, underlying: int) -> None:
         """
@@ -496,8 +539,7 @@ class Trader(gym.Env):
         None
         """
         ret = self._get_return() - self.rate / 252
-        if ret < 0:
-            self.return_series = np.append(self.return_series, ret)
+        self.return_series = np.append(self.return_series, ret)
 
     @property
     def return_volatility(self) -> Union[np.floating[Any], float]:

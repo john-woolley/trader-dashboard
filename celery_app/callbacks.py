@@ -1,3 +1,4 @@
+import logging
 import time
 import datetime
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
@@ -6,6 +7,8 @@ import db
 from typing import Union, Optional
 import gymnasium as gym
 from stable_baselines3.common.vec_env import VecEnv
+
+logger = logging.getLogger(__name__)
 
 class UpdatePctCallback(EvalCallback):
     """
@@ -56,6 +59,7 @@ class UpdatePctCallback(EvalCallback):
         eta_secs = time_delta / progress_delta * (1 - progress)
         eta = datetime.datetime.fromtimestamp(self.update_time + eta_secs)
         db.Jobs.update_pct_complete(self.jobname, progress, eta)
+        logger.info("Job %s progress: %.2f%% ETA: %s", self.jobname, progress * 100, eta)
         return super(UpdatePctCallback, self)._on_step()
 
 

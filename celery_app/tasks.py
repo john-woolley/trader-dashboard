@@ -94,7 +94,7 @@ def monitor_progress(jobname, cv_periods, timesteps):
             eta = datetime.datetime.fromtimestamp(update_time + eta_secs)
             db.Jobs.update_pct_complete(jobname, pct_complete, eta)
        
-        status = db.Jobs.get(jobname)
+        status = db.Jobs.get(jobname)["status"]
         if status == "complete":
             break
 

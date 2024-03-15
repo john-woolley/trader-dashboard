@@ -13,25 +13,19 @@ trader-dashboard
     :widths: 15 85
     :stub-columns: 1
 
-    * - Build
-      - | |Tests| |Pylint| 
     * - Package
       - | |Supported implementations| |PyPI version| |Code style ruff|
 
-.. |Pylint| image:: https://github.com/john-woolley/trader-dashboard/actions/workflows/pylint.yml/badge.svg?branch=main
-   :target: https://github.com/john-woolley/trader-dashboard/actions/workflows/pylint.yml
 .. |Code style ruff| image:: https://img.shields.io/badge/code%20style-ruff-000000.svg
    :target: https://docs.astral.sh/ruff/
 .. |PyPI version| image:: https://img.shields.io/pypi/pyversions/sanic.svg
    :alt: CPython
-.. |Tests| image:: https://github.com/john-woolley/trader-dashboard/actions/workflows/tests.yml/badge.svg?branch=main
-   :target: https://github.com/john-woolley/trader-dashboard/actions/workflows/tests.yml
 .. |Supported implementations| image:: https://img.shields.io/pypi/implementation/sanic.svg
     :alt: 3.8, 3.9, 3.10, 3.11
 .. end-badges
 
 =======================================================
-Reinforcement Learning Dashboard with Sanic and ReactPy
+Reinforcement Learning Dashboard with Sanic and Celery
 =======================================================
 
 
@@ -50,8 +44,25 @@ Milestones
 
 - [x] Create reinforcement training environment for asset allocation
 - [x] Create a Sanic server
+- [x] Create a Celery worker
+- [x] Create a DB API 
 - [.] Create a backend API 
+- [.] Implement critical sections in Rust
+- [.] Create a DAG api for customized feature engineering
 - [ ] Create a ReactPy front-end
+
+
+*****************
+API Specification
+*****************
+
+The API specification is a work in progress.  It will be updated as the project progresses.
+
+- [x] Upload CSV data to data store: `upload_csv`
+- [x] Standardize and partition data for time series cross validation: `prepare_data`
+- [x] Start training and validation loop over the cross validation periods: `start_training`
+- [ ] Report job status and progress: `get_jobs`
+- [ ]  
 
 ***********
 Screenshots
