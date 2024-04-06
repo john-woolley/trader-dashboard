@@ -76,7 +76,9 @@ class Trader(gym.Env):
         return self.trader.render(mode)
 
 if __name__ == '__main__':
-    env = Trader("test_upload", "test_job_1024_deep", 0)
+    env = Trader("test_upload", "test_job_2048_8", 0)
     print(env.no_symbols)
     print(env.dates)
     print(env.trader.current_portfolio_value)
+    print (env.trader.current_portfolio_value)
+    print(env.trader.reset())

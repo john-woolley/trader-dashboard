@@ -109,7 +109,7 @@ def manage_training_async(args):
     start_i = int(args.get("i", 0))
     table_name = args.get("table_name")
     cv_periods = db.CVData.get_cv_no_chunks(table_name, jobname) - 1
-    group_tasks = [sleep.s(0, 0)]
+    group_tasks = []
     i = start_i
     while i < cv_periods:
 

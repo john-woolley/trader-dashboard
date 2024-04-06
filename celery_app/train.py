@@ -2,7 +2,6 @@ import click
 import logging
 from stable_baselines3 import PPO, SAC
 from vec_env import CeleryVecEnv
-from stable_baselines3.common.vec_env import VecMonitor
 from callbacks import UpdatePctCallback
 from memcache_lock import memcache_lock
 from trader import Trader
@@ -102,29 +101,18 @@ def train(
     policy_kwargs = {
         "net_arch": network,
     }
-    try:
-        model_train = model.load(f"model_{jobname}_{i-1}/best_model", env)
-    except FileNotFoundError:
-        model_train = model(
-            "MlpPolicy",
-            env,
-            policy_kwargs=policy_kwargs,
-            verbose=0,
-            batch_size=batch_size,
-            use_sde=use_sde,
-            device=device,
-            tensorboard_log=f"log/tensorboard/{jobname}",
-        )
-    eval_env = Trader(
-        table_name,
-        jobname,
-        i + 1,
-        test=True,
-        render_mode=render_mode,
-        risk_aversion=risk_aversion,
+    model_train = model(
+        "MlpPolicy",
+        env,
+        policy_kwargs=policy_kwargs,
+        verbose=0,
+        batch_size=batch_size,
+        use_sde=use_sde,
+        device=device,
+        tensorboard_log=f"log/tensorboard/{jobname}",
     )
     callback = UpdatePctCallback(
-        eval_env,
+        env,
         total_timesteps=timesteps,
         jobname=chunk_job_train,
         best_model_save_path=f"model_{jobname}_{i}",

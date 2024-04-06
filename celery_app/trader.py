@@ -361,7 +361,7 @@ class Trader(gym.Env):
         poly = np.polyfit(np.log(lags), np.log(tau), 1)
         return poly[0]
 
-    def _get_rsi(self, ts: np.ndarray) -> float:
+    def _get_rsi(self, ts: np.ndarray) -> np.float64:
         """
         Calculate the Relative Strength Index (RSI) for a given time series.
 
@@ -382,7 +382,7 @@ class Trader(gym.Env):
             avg_gain = (avg_gain * (period - 1) + gain[i]) / period
             avg_loss = (avg_loss * (period - 1) + loss[i]) / period
         if avg_loss == 0:
-            return 100
+            return np.float64(100)
         rs = avg_gain / avg_loss
         rsi = 100 - 100 / (1 + rs)
         return rsi
@@ -482,8 +482,14 @@ class Trader(gym.Env):
             distance_from_min = np.ones(self.no_symbols)
             causal_strength = np.zeros((len(used_cols), self.no_symbols)).ravel()
 
-        stock_state = spot_window[-1, :, 1:-macro_len].reshape(-1)
-        macro_state = spot_window[-1, -1, -macro_len:]
+        try:
+            stock_state = spot_window[-1, :, 1:-macro_len] - spot_window[-2, :, 1:-macro_len]
+            macro_state = spot_window[-1, -1, -macro_len:] - spot_window[-2, -1, -macro_len:]
+            stock_state = stock_state.reshape(-1)
+        except IndexError:
+            stock_state = np.zeros(self.no_symbols * len(used_cols))
+            macro_state = np.zeros(macro_len)
+
         self.spot = spot
         log_spot_window = np.log(spot_window[:, :, 0])
 
@@ -621,7 +627,7 @@ class Trader(gym.Env):
         self._accrue_interest()
 
         for idx, x in enumerate(action[: self.no_symbols]):
-            self.model_portfolio[idx] = x
+            self.model_portfolio[idx] += x
 
         self.short_leverage = action[-3]
         self.long_leverage = action[-2]

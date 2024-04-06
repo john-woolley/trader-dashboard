@@ -1,13 +1,38 @@
-use pyo3::prelude::*;
+use pyo3::{ffi::printfunc, prelude::*, types::PyTuple};
 use polars::prelude::*;
 use std::collections::{HashMap, VecDeque};
 use pyo3_polars::{PyDataFrame, PySeries};
+use pyo3::types::IntoPyDict;
+use chrono::NaiveDate;
 use polars::prelude::*;
 
 enum RenderValue {
     Float(f64),
     Int(i64),
     String(String),
+}
+
+impl IntoPy<PyObject> for RenderValue {
+    fn into_py(self, py: Python) -> PyObject {
+        match self {
+            RenderValue::Float(f) => f.into_py(py),
+            RenderValue::Int(i) => i.into_py(py),
+            RenderValue::String(s) => s.into_py(py),
+        }
+    }
+}
+
+enum RenderMode {
+    Live,
+    File,
+}
+
+enum StepResult {
+    Observation(Vec<f64>),
+    Reward(f64),
+    Done(bool),
+    Bool(bool),
+    Info(HashMap<String, RenderValue>),
 }
 
 const USED_COLS: [&str; 13] = [
@@ -179,7 +204,7 @@ impl Trader {
         trader
     }
 
-    fn reset(&mut self) {
+    fn reset(&mut self) -> (Vec<f64>, HashMap::<String, RenderValue>){
         self.current_step = 0;
         self.balance = self.initial_balance;
         self.return_series = vec![];
@@ -190,7 +215,9 @@ impl Trader {
         self.net_leverage = vec![0.0; self.no_symbols];
         self.model_portfolio = vec![0.0; self.no_symbols];
         let predicate: String = self.dates.get(self.current_step).unwrap().to_string();
-        let filter_expr = col("date").eq(lit(predicate));
+        println!("Date: {}", predicate.clone());
+        let predicate_date = NaiveDate::parse_from_str(&predicate, "%Y-%m-%d").unwrap();
+        let filter_expr = col("date").eq(lit(predicate_date));
         self.spot = self.data
             .select(&["spot", "date"])
             .unwrap()
@@ -198,32 +225,61 @@ impl Trader {
             .filter(filter_expr)
             .collect()
             .unwrap()
-            .drop_in_place("date")
+            .select(&["spot"])
+            .unwrap()
+            .column("spot")
             .unwrap()
             .f64()
             .unwrap()
             .into_no_null_iter()
             .collect();
+        println!("Spot: {:?}", self.spot);
         self.prev_spot = self.spot.clone();
         self.deviations = vec![];
         self.paid_slippage = 0.0;
         self.rsi = vec![50.0; self.no_symbols];
         self.state_buffer = VecDeque::new();
-        let state_frame = self.get_state_frame();
-        while self.state_buffer.len() < self.n_lags {
-            self.state_buffer.push_back(state_frame);
+        let state_frame = self._get_state_frame();
+        let state_frame_rs = Into::<DataFrame>::into(state_frame);
+        let mut vec = Vec::new();
+        for name in state_frame_rs.get_column_names() {
+            let series = state_frame_rs.column(name).unwrap();
+            if let Ok(floats) = series.f64() {
+                vec.extend(floats.into_iter().filter_map(|x| x));
+            }
         }
-        return self._get_observation();
+        while self.state_buffer.len() < self.n_lags {
+            self.state_buffer.push_back(vec.clone());
+        }
+        return (self._get_observation(), HashMap::new());
     }   
 
-    fn get_state_frame(&self) -> DataFrame {
+
+    fn _get_state_frame(&self) -> PyDataFrame {
+        let predicate_date = NaiveDate::parse_from_str(&self.dates.get(self.current_step).unwrap().to_string(), "%Y-%m-%d").unwrap();
         let mut state_frame = self.data
             .select(&["spot", "date", "ticker"])
             .unwrap()
             .lazy()
-            .filter(col("date").eq(lit(self.dates.get(self.current_step).unwrap().to_string())))
+            .filter(col("date").eq(lit(predicate_date)))
             .collect()
             .unwrap();
+
+        if self.current_step < self.n_lags {
+            for _ in 1..self.current_step {
+                let predicate: String = self.dates.get(self.current_step).unwrap().to_string();
+                let filter_expr = col("date").eq(lit(predicate));
+                let lag_frame = self.data
+                    .select(&["spot", "date", "ticker"])
+                    .unwrap()
+                    .lazy()
+                    .filter(filter_expr)
+                    .collect()
+                    .unwrap();
+                state_frame = state_frame.vstack(&lag_frame).unwrap();
+            }
+            return PyDataFrame(state_frame);
+        }
         for i in 1..self.n_lags {
 
             let predicate: String = self.dates.get(self.current_step - i).unwrap().to_string();
@@ -238,7 +294,8 @@ impl Trader {
             state_frame = state_frame.vstack(&lag_frame).unwrap();
 
         }
-        state_frame
+        let res = PyDataFrame(state_frame);
+        res
     }
 
     fn _get_hurst_exponent(&self, series: Vec<f64>) -> f64 {
@@ -343,6 +400,12 @@ impl Trader {
         self.model_portfolio.clone().iter().sum()
     }
 
+    fn get_net_position_weights(&self) -> Vec<f64> {
+        let net_position_values = self.get_net_position_values();
+        let total_net_position_value: f64 = net_position_values.iter().sum();
+        net_position_values.iter().map(|x| x / total_net_position_value).collect()
+    }
+
 
 
     fn get_model_portfolio_weights(&self) -> Vec<f64> {
@@ -367,6 +430,102 @@ impl Trader {
         res
     }
 
+    fn _trade(&mut self, amount: f64, sign: f64, underlying: usize) -> () {
+        let paid_slippage = self.transaction_cost * amount * self.spot[underlying];
+        self.net_leverage[underlying] = self.net_leverage[underlying] + sign * amount;
+        self.balance = self.balance - sign * amount * self.spot[underlying] - paid_slippage;
+        self.paid_slippage = paid_slippage;
+    }
 
+    fn _get_observation(&self) -> Vec<f64> {
+        let obs = self.state_buffer.iter().flatten().copied().collect::<Vec<f64>>();
+        obs
+    }
 
+    fn _accrue_interest(&mut self) -> () {
+        let interest = self.get_total_net_position_value() * 0.01 / 252.0;
+        self.balance = self.balance + interest;
+    }
+
+    fn _yeo_johnson_transform(&self, val: f64, lambda: f64) -> f64{
+        if lambda == 0.0 {
+            val.ln()
+        } else {
+            if val < 0.0 {
+                -((-val + 1.0).powf(lambda) - 1.0) / lambda
+            } else {
+                (val + 1.0).powf(lambda) - 1.0
+            }
+        }
+    }
+
+    fn _get_return(&self, current_portfolio_value: f64, prev_portfolio_value: f64) -> f64 {
+        (current_portfolio_value - prev_portfolio_value) / prev_portfolio_value
+    }
+
+    fn _get_reward(&self, current_portfolio_value: f64, prev_portfolio_value: f64) -> f64 {
+        let ret = self._get_return(current_portfolio_value, prev_portfolio_value);
+        let rf_ret = 0.01 / 252.0;
+        let ret_vol = self.return_series.iter().fold(0.0, |acc, x| acc + x.powi(2)).sqrt();
+        let reward = self._yeo_johnson_transform((ret-rf_ret) / ret_vol, self.risk_aversion);
+        let normalized_reward = 1.0 / (1.0 + (-reward).exp());
+        normalized_reward
+    }
+
+    fn step(&mut self, action: Vec<f64>) -> (Vec<f64>, f64, bool, bool, HashMap<String, RenderValue>){
+        self.paid_slippage = 0.0;
+        let prev_portfolio_value = self.get_current_portfolio_value();
+        self.prev_spot = self.spot.clone();
+        self._accrue_interest();
+
+        for i in 0..self.no_symbols {
+            self.model_portfolio[i] = action[i];
+        }
+
+        let short_leverage = action[action.len() - 3];
+        let long_leverage = action[action.len() - 2];
+        let trade_today = action[action.len() - 1] > 0.0 || self.current_step % 20 == 0;
+        let target_weights = self.get_model_portfolio_weights();
+
+        let mut deviations: Vec<f64> = target_weights.iter()
+                    .zip(&self.model_portfolio)
+                    .map(|(target, model)| target - model)
+                    .collect();
+
+        let net_position_weights = self.get_net_position_weights();
+
+        for i in 0..self.no_symbols {
+            let actual_weight = net_position_weights[i];
+            let target_weight = target_weights[i];
+            deviations[i] = target_weight - actual_weight;
+        let sum_deviation: f64 = deviations.iter().sum();
+        deviations = deviations.iter().map(|x| x / sum_deviation).collect();
+        
+        if trade_today {
+            for i in 0..self.no_symbols {
+                let deviation = deviations[i];
+                let sign = deviation.signum();
+                let amount = deviation.abs();
+                if sign > 0.0 {
+                    self._trade(amount, sign, i);
+                }
+            }
+        }
+    }
+
+        let obs = self._get_observation();
+        let current_portfolio_value = self.get_current_portfolio_value();
+        let reward = self._get_reward(current_portfolio_value, prev_portfolio_value);
+        self.current_step += 1;
+        let done = self.current_step >= self.ep_length || current_portfolio_value < 0.5 * self.initial_balance;
+
+        let res = (
+            obs,
+            reward,
+            done,
+            false,
+            HashMap::new(),
+        );
+        return res;
+    }
 }
